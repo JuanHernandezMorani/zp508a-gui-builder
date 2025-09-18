@@ -1,34 +1,27 @@
 const path = require('path')
 
+const REGISTER_FUNCTIONS = [
+  'zp_class_zombie_register',
+  'zp_register_zombie_class',
+  'zp_class_human_register',
+  'zp_register_human_class',
+  'zp_register_zombie_special_class',
+  'zp_register_human_special_class',
+  'zp_weapon_register',
+  'zp_register_extra_item',
+  'zp_register_gamemode'
+]
+
+function esc(s){ return s.replace(/[.*+?^${}()|[\]\]/g, '\$&') }
+
 const REGISTER_TYPE_RESOLVERS = [
-  {
-    match: name => name.startsWith('zp_class_zombie_register') || name.startsWith('zp_register_zombie_class'),
-    type: 'zombie_class'
-  },
-  {
-    match: name => name.startsWith('zp_class_human_register') || name.startsWith('zp_register_human_class'),
-    type: 'human_class'
-  },
-  {
-    match: name => name.startsWith('zp_register_zombie_special_class'),
-    type: 'zombie_special'
-  },
-  {
-    match: name => name.startsWith('zp_register_human_special_class'),
-    type: 'human_special'
-  },
-  {
-    match: name => name.startsWith('zp_weapon_register'),
-    type: 'weapon'
-  },
-  {
-    match: name => name.startsWith('zp_register_extra_item'),
-    type: 'shop_item'
-  },
-  {
-    match: name => name.startsWith('zp_register_gamemode'),
-    type: 'mode'
-  }
+  { match: name => name.toLowerCase() === 'zp_class_zombie_register' || name.toLowerCase() === 'zp_register_zombie_class', type: 'zombie_class' },
+  { match: name => name.toLowerCase() === 'zp_class_human_register'  || name.toLowerCase() === 'zp_register_human_class',  type: 'human_class' },
+  { match: name => name.toLowerCase() === 'zp_register_zombie_special_class', type: 'zombie_special' },
+  { match: name => name.toLowerCase() === 'zp_register_human_special_class', type: 'human_special' },
+  { match: name => name.toLowerCase() === 'zp_weapon_register', type: 'weapon' },
+  { match: name => name.toLowerCase() === 'zp_register_extra_item', type: 'shop_item' },
+  { match: name => name.toLowerCase() === 'zp_register_gamemode', type: 'mode' }
 ]
 
 const TYPE_STAT_FIELDS = {
@@ -119,7 +112,17 @@ function parseSMAFile(filePath, rawText) {
     warnings.forEach(msg => console.warn(pref + msg))
   }
 
-  return entities
+  // ...después de asignar resources y normalizar:
+  const seen = new Set()
+  const deduped = []
+  for (const e of entities) {
+    const key = `${e.type}|${(e.name || '').toLowerCase()}|${(e.fileName || '').toLowerCase()}`
+    if (!seen.has(key)) {
+      seen.add(key)
+      deduped.push(e)
+    }
+  }
+  return deduped
 }
 
 function stripComments(text) {
@@ -266,7 +269,8 @@ function collectResources(rawText, commentless, definitions, warn) {
 }
 
 function findRegisterCalls(rawText) {
-  const regex = /\b(zp_(?:class_)?zombie_register\w*|zp_(?:class_)?human_register\w*|zp_register_zombie_special_class\w*|zp_register_human_special_class\w*|zp_register_extra_item\w*|zp_weapon_register\w*|zp_register_gamemode\w*)\s*\(/gi
+  const pat = '\\b(' + REGISTER_FUNCTIONS.map(esc).join('|') + ')\\s*\\('
+  const regex = new RegExp(pat, 'gi')
   const calls = []
   let match
   while ((match = regex.exec(rawText)) !== null) {
@@ -276,12 +280,7 @@ function findRegisterCalls(rawText) {
     if (!extracted) continue
     const args = parseArguments(extracted.args)
     const line = rawText.slice(0, match.index).split(/\r?\n/).length
-    calls.push({
-      name,
-      args,
-      index: match.index,
-      line
-    })
+    calls.push({ name, args, index: match.index, line })
   }
   return calls
 }

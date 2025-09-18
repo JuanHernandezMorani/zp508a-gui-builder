@@ -4,6 +4,7 @@ const fs = require('fs')
 const url = require('url')
 const fse = require('fs-extra')
 const { spawn, spawnSync } = require('child_process')
+const { parseSMAFile } = require('./smaParser.cjs')
 
 const APP_DIRS = {
   input: path.join(process.cwd(), 'input'),
@@ -104,6 +105,58 @@ function mapTypeDir(t) {
     case 'system': return 'scripting/systems'
     default: return 'scripting/misc'
   }
+}
+
+function emptyStatsForType(type) {
+  switch (type) {
+    case 'zombie_class':
+    case 'zombie_special':
+      return { health: undefined, speed: undefined, gravity: undefined, knockback: undefined }
+    case 'human_class':
+    case 'human_special':
+      return { health: undefined, speed: undefined, gravity: undefined, armor: undefined }
+    case 'weapon':
+      return { damage: undefined, clip_capacity: undefined, fire_rate: undefined, reload_time: undefined, cost: undefined }
+    case 'shop_item':
+      return { cost: undefined, team: undefined, unlimited: undefined }
+    default:
+      return {}
+  }
+}
+
+function normalizeEntityPaths(paths) {
+  const ensureArray = (value) => Array.isArray(value) ? value.filter(Boolean) : []
+  const unique = (arr) => Array.from(new Set(arr))
+  if (!paths || typeof paths !== 'object') {
+    return { models: [], sounds: [], sprites: [] }
+  }
+  return {
+    models: unique(ensureArray(paths.models)),
+    sounds: unique(ensureArray(paths.sounds)),
+    sprites: unique(ensureArray(paths.sprites))
+  }
+}
+
+function detectFallbackType(textLower, fnameLower) {
+  let type = null
+  if (textLower.includes('zp_register_zombie_class') || textLower.includes('zp_class_zombie_register')) type = 'zombie_class'
+  else if (textLower.includes('zp_register_human_class') || textLower.includes('zp_class_human_register')) type = 'human_class'
+  else if (textLower.includes('zp_register_human_special_class')) type = 'human_special'
+  else if (textLower.includes('zp_register_zombie_special_class')) type = 'zombie_special'
+  else if (textLower.includes('zp_register_gamemode')) type = 'mode'
+  else if (textLower.includes('zp_register_extra_item')) type = 'shop_item'
+  else if (textLower.includes('zp_weapon_register')) type = 'weapon'
+  else if (fnameLower.includes('zp50_class_assassin') || fnameLower.includes('zp50_class_nemesis') ||
+    fnameLower.includes('zp50_class_dragon') || fnameLower.includes('zp50_class_nightcrawler') ||
+    fnameLower.includes('zp50_class_plasma') || fnameLower.includes('zp50_class_knifer')) type = 'zombie_special'
+  else if (fnameLower.includes('zp50_class_snier') || fnameLower.includes('zp50_class_survivor')) type = 'human_special'
+  else if (fnameLower.startsWith('zp50_class_zombie')) type = 'zombie_class'
+  else if (fnameLower.startsWith('zp50_class_human')) type = 'human_class'
+  else if (fnameLower.startsWith('zp50_gamemode')) type = 'mode'
+  else if (fnameLower.startsWith('zp50_item_') || fnameLower.startsWith('zp50_grenade')) type = 'shop_item'
+  else if (fnameLower.startsWith('zp50_weapon_')) type = 'weapon'
+  else if (fnameLower.startsWith('zp50_')) type = 'system'
+  return type
 }
 
 // ------------------- Python Helpers --------------------
@@ -226,54 +279,6 @@ function createErrorPlaceholder(outputPath, type) {
   fs.writeFileSync(outputPath, svgContent)
 }
 
-// ------------------- Parse helpers --------------------
-function extractStatsFromSMA(text, kind) {
-  const t = text
-
-  const num = (re) => {
-    const m = t.match(re)
-
-    if (!m) return undefined
-
-    const val = m[1] || m[0]
-    return val.includes('.') ? parseFloat(val) : parseInt(val)
-}
-
-  if (kind === 'zombie' || kind === 'zombie_class' || kind === 'zombie_special') {
-    return {
-      health: num(/zclass_health\s*=\s*([0-9.]+)/i),
-      speed: num(/zclass_speed\s*=\s*([0-9.]+)/i),
-      gravity: num(/zclass_gravity\s*=\s*([0-9.]+)/i),
-      knockback: num(/zclass_kb|zclass_knockback|knockback\s*=\s*([0-9.]+)/i)
-    }
-  }
-  if (kind === 'human' || kind === 'human_class' || kind === 'human_special') {
-    return {
-      health: num(/hclass_health\s*=\s*([0-9.]+)/i),
-      speed: num(/hclass_speed\s*=\s*([0-9.]+)/i),
-      armor: num(/hclass_armor|maxarmor\s*=\s*([0-9.]+)/i),
-      base_damage: num(/base_damage\s*=\s*([0-9.]+)/i)
-    }
-  }
-  if (kind === 'shop_item') {
-    return {
-      cost: num(/item_cost\s*=\s*([0-9.]+)/i),
-      team: num(/item_team\s*=\s*([0-9.]+)/i),
-      unlimited: num(/item_unlimited\s*=\s*([0-9.]+)/i)
-    }
-  }
-  if (kind === 'weapon') {
-    return {
-      damage: num(/weapon_damage\s*=\s*([0-9.]+)/i),
-      clip_capacity: num(/weapon_clip|clip_capacity\s*=\s*([0-9.]+)/i),
-      fire_rate: num(/weapon_firerate|fire_rate\s*=\s*([0-9.]+)/i),
-      reload_time: num(/weapon_reload|reload_time\s*=\s*([0-9.]+)/i),
-      cost: num(/weapon_cost\s*=\s*([0-9.]+)/i)
-    }
-  }
-  return {}
-}
-
 // ------------------- Walk Recursivo --------------------
 function walkAll(dir) {
   let results = []
@@ -345,64 +350,44 @@ ipcMain.handle('scan:sma', async () => {
   for (const p of files) {
     const raw = fs.readFileSync(p, 'utf-8')
     const text = raw.toLowerCase()
-    const fname = path.basename(p).toLowerCase()
+    const fname = path.basename(p)
+    const fnameLower = fname.toLowerCase()
     if (/_api\.sma$/i.test(fname) || /^amx_/i.test(fname) || /^cs_/i.test(fname)) continue
 
-    const pushItem = (type, name, statsKind) => {
-      const fileBase = path.basename(p, '.sma')
+    const parsedEntities = parseSMAFile(p, raw)
+    const fileBase = path.basename(p, '.sma')
+
+    if (parsedEntities.length === 0) {
+      const fallbackType = detectFallbackType(text, fnameLower)
+      if (fallbackType) {
+        scanned.push({
+          id: cryptoRandomId(),
+          name: fileBase,
+          fileName: fileBase,
+          type: fallbackType,
+          enabled: true,
+          source: 'scan',
+          stats: emptyStatsForType(fallbackType),
+          meta: { detection: 'fallback' },
+          paths: { models: [], sounds: [], sprites: [] }
+        })
+      }
+      continue
+    }
+
+    for (const entity of parsedEntities) {
+      const normalizedPaths = normalizeEntityPaths(entity.paths)
       scanned.push({
         id: cryptoRandomId(),
-        name: name || fileBase,
-        fileName: fileBase,
-        type,
+        name: entity.name || fileBase,
+        fileName: entity.fileName || fileBase,
+        type: entity.type,
         enabled: true,
         source: 'scan',
-        stats: extractStatsFromSMA(raw, statsKind || type),
-        meta: {},
-        paths: { models: [], sounds: [], sprites: [] }
+        stats: entity.stats || emptyStatsForType(entity.type),
+        meta: entity.meta && typeof entity.meta === 'object' ? entity.meta : {},
+        paths: normalizedPaths
       })
-    }
-
-    let matched = false
-    const rx = {
-      zombie_class: /zp_(?:class_)?zombie_register\s*\(([^)]*)\)|zp_register_zombie_class\s*\(([^)]*)\)/gi,
-      human_class: /zp_(?:class_)?human_register\s*\(([^)]*)\)|zp_register_human_class\s*\(([^)]*)\)/gi,
-      zombie_special: /zp_register_zombie_special_class\s*\(([^)]*)\)|zp_class_special_register\s*\(([^)]*)\)/gi,
-      human_special: /zp_register_human_special_class\s*\(([^)]*)\)|zp_class_special_register\s*\(([^)]*)\)/gi,
-      mode: /zp_register_gamemode\s*\(([^)]*)\)/gi,
-      shop_item: /zp_register_extra_item\s*\(([^)]*)\)/gi
-    }
-
-    for (const [k, r] of Object.entries(rx)) {
-      let m
-      while ((m = r.exec(raw)) !== null) {
-        const params = m[1] || m[2] || ""
-        const nameMatch = params.match(/"([^"]+)"/)
-        const cname = nameMatch ? nameMatch[1] : null
-        pushItem(k, cname, k.includes('zombie') ? 'zombie' : (k.includes('human') ? 'human' : undefined))
-        matched = true
-      }
-    }
-
-    if (!matched) {
-      let type = 'misc'
-      if (text.includes('zp_register_zombie_class')) type = 'zombie_class'
-      else if (text.includes('zp_register_human_class')) type = 'human_class'
-      else if (text.includes('zp_register_human_special_class')) type = 'human_special'
-      else if (text.includes('zp_register_zombie_special_class')) type = 'zombie_special'
-      else if (text.includes('zp_register_gamemode')) type = 'mode'
-      else if (text.includes('zp_register_extra_item')) type = 'shop_item'
-      else if (fname.includes('zp50_class_assassin') || fname.includes('zp50_class_nemesis') ||
-        fname.includes('zp50_class_dragon') || fname.includes('zp50_class_nightcrawler') ||
-        fname.includes('zp50_class_plasma') || fname.includes('zp50_class_knifer')) type = 'zombie_special'
-      else if (fname.includes('zp50_class_snier') || fname.includes('zp50_class_survivor')) type = 'human_special'
-      else if (fname.startsWith('zp50_class_zombie')) type = 'zombie_class'
-      else if (fname.startsWith('zp50_class_human')) type = 'human_class'
-      else if (fname.startsWith('zp50_gamemode')) type = 'mode'
-      else if (fname.startsWith('zp50_item_') || fname.startsWith('zp50_grenade')) type = 'shop_item'
-      else if (fname.startsWith('zp50_')) type = 'system'
-
-      if (type !== 'misc') pushItem(type, null, type.includes('zombie') ? 'zombie' : (type.includes('human') ? 'human' : undefined))
     }
   }
 

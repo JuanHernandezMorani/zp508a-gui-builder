@@ -41,6 +41,14 @@ const TYPE_STAT_FIELDS = {
   shop_item: ['cost', 'team', 'unlimited']
 }
 
+const TYPE_FIELD_POSITIONS = {
+  shop_item: {
+    cost: 1,
+    team: 2,
+    unlimited: 3
+  }
+}
+
 const STAT_KEYWORDS = {
   health: ['health', 'hp'],
   speed: ['speed', 'velocity'],
@@ -69,8 +77,8 @@ const DEFAULT_VALUES = {
   human_special: { health: 100, speed: 240, gravity: 1.0, armor: 0 },
   zombie_class: { health: 2000, speed: 250, gravity: 1.0, knockback: 1.0 },
   zombie_special: { health: 2000, speed: 250, gravity: 1.0, knockback: 1.0 },
-  weapon: { damage: undefined, clip_capacity: undefined, fire_rate: undefined, reload_time: undefined, cost: undefined },
-  shop_item: { cost: undefined, team: undefined, unlimited: undefined },
+  weapon: { damage: 0, clip_capacity: 0, fire_rate: 0, reload_time: 0, cost: 0 },
+  shop_item: { cost: 0, team: 0, unlimited: 0 },
   mode: {}
 }
 
@@ -81,7 +89,18 @@ const HARDCODED_CONSTANTS = {
   zombieclass2_name: 'Raptor Zombie',
   zombieclass3_name: 'Light Zombie',
   zombieclass4_name: 'Fat Zombie',
-  zombieclass6_name: 'Rage Zombie'
+  zombieclass6_name: 'Rage Zombie',
+  ZP_TEAM_ZOMBIE: 1 << 0,
+  ZP_TEAM_HUMAN: 1 << 1,
+  ZP_TEAM_NEMESIS: 1 << 2,
+  ZP_TEAM_SURVIVOR: 1 << 3,
+  ZP_TEAM_SNIPER: 1 << 4,
+  ZP_TEAM_ASSASSIN: 1 << 5,
+  ZP_TEAM_ANY: 0,
+  true: 1,
+  false: 0,
+  TRUE: 1,
+  FALSE: 0
   // Extensible: agregar más si fuese necesario según el pack de ZP 5.0.8a
 }
 
@@ -246,7 +265,8 @@ function parseSMAEntities(filePath, rawText) {
         warnings: callWarnings,
         conflicts: [],
         bundle: fileBase,
-        normalizedName
+        normalizedName,
+        supplemental: []
       },
       _registerIndex: call.index,
       _prefixes: prefixes,
@@ -543,48 +563,103 @@ function findSupplementalCalls(rawText) {
 function applySupplementalCalls(calls, entities, context) {
   if (!Array.isArray(calls) || !calls.length) return
   if (!Array.isArray(entities) || !entities.length) return
+
   const resolver = context && context.resolver
-  const registry = new Map()
+  const warn = context && typeof context.warn === 'function' ? context.warn : () => {}
+  const registryByVar = new Map()
+  const registryByName = new Map()
+  const registryByToken = new Map()
+
   for (const entity of entities) {
-    const varName = entity && entity.meta && entity.meta.registerVar
-    if (varName) registry.set(varName.toLowerCase(), entity)
+    if (!entity || !entity.meta) continue
+    const varName = entity.meta.registerVar
+    if (varName) registryByVar.set(varName.toLowerCase(), entity)
+    const normalizedName = entity.meta.normalizedName || normalizeName(entity.name)
+    if (normalizedName) registryByName.set(normalizedName, entity)
+    const token = entity.meta.displayNameToken
+    if (token) registryByToken.set(token.toLowerCase(), entity)
   }
 
   for (const call of calls) {
     const handler = SUPPLEMENTAL_HANDLERS[call.name.toLowerCase()]
     if (!handler || !call.args.length) continue
-    const ident = extractIdentifier(call.args[0])
-    if (!ident) continue
-    const entity = registry.get(ident.toLowerCase())
-    if (!entity) continue
+
+    const firstArg = call.args[0]
+    const ident = extractIdentifier(firstArg)
+    let entity = null
+
+    if (ident) {
+      const lowerIdent = ident.toLowerCase()
+      if (registryByVar.has(lowerIdent)) entity = registryByVar.get(lowerIdent)
+      if (!entity && registryByToken.has(lowerIdent)) entity = registryByToken.get(lowerIdent)
+    }
+
+    if (!entity && resolver && firstArg !== undefined) {
+      const resolved = resolver.resolveValue(firstArg, 'supplemental.lookup')
+      const resolvedCandidates = flattenStringValues(resolved)
+      for (const candidate of resolvedCandidates) {
+        const normalized = normalizeName(candidate)
+        if (normalized && registryByName.has(normalized)) {
+          entity = registryByName.get(normalized)
+          break
+        }
+      }
+    }
+
+    if (!entity && ident) {
+      const normalizedIdent = normalizeName(ident)
+      if (normalizedIdent && registryByName.has(normalizedIdent)) {
+        entity = registryByName.get(normalizedIdent)
+      }
+    }
+
+    if (!entity) {
+      const lineInfo = call.line !== undefined ? call.line : '?'
+      warn(`No se encontró entidad base para ${call.name} (línea ${lineInfo})`)
+      continue
+    }
 
     const warningSet = ensureWarningSet(entity.meta.warnings)
     entity.meta.warnings = warningSet
     context.currentWarnings = warningSet
+
+    if (!Array.isArray(entity.meta.supplemental)) entity.meta.supplemental = []
+    const record = { function: call.name, params: {} }
 
     if (handler.kind === 'stat') {
       const expr = call.args[1]
       const resolved = expr && resolver ? resolver.resolveValue(expr, `${entity.type}.${handler.field}`) : undefined
       const numeric = toNumber(resolved)
       if (numeric === undefined) {
-        context.warn(`No se pudo resolver ${handler.field} adicional (${call.name} línea ${call.line})`)
+        warn(`No se pudo resolver ${handler.field} adicional (${call.name} línea ${call.line})`)
+        const fallback = entity.stats && entity.stats[handler.field] !== undefined ? entity.stats[handler.field] : DEFAULT_VALUES[entity.type]?.[handler.field]
+        if (fallback !== undefined && entity.stats) entity.stats[handler.field] = fallback
+        record.params[handler.field] = fallback
       } else {
         entity.stats[handler.field] = numeric
+        record.params[handler.field] = numeric
       }
     } else if (handler.kind === 'models') {
       const expr = call.args[1]
+      const addedModels = new Set()
       if (!expr) {
-        context.warn(`No se pudo resolver modelo adicional (${call.name} línea ${call.line})`)
+        warn(`No se pudo resolver modelo adicional (${call.name} línea ${call.line})`)
       } else {
         const resolved = resolver ? resolver.resolveValue(expr, 'paths') : undefined
         const strings = flattenStringValues(resolved)
         if (!strings.length) {
-          context.warn(`No se pudo resolver modelo adicional (${call.name} línea ${call.line})`)
+          warn(`No se pudo resolver modelo adicional (${call.name} línea ${call.line})`)
         }
-        for (const value of strings) addResourceToEntity(entity, 'models', value)
+        for (const value of strings) {
+          addResourceToEntity(entity, 'models', value)
+          const normalized = normalizePath(value)
+          if (normalized) addedModels.add(normalized)
+        }
       }
+      record.params.models = Array.from(addedModels)
     }
 
+    entity.meta.supplemental.push(record)
     context.currentWarnings = null
   }
   context.currentWarnings = null
@@ -1100,6 +1175,7 @@ function extractStatsForEntity(call, type, context, prefixes) {
   const fields = TYPE_STAT_FIELDS[type] || []
   for (const field of fields) stats[field] = undefined
 
+  const positional = TYPE_FIELD_POSITIONS[type] || {}
   const definitionEntries = context.definitions.entries
   const resolver = context.resolver
   const warn = context.warn
@@ -1107,14 +1183,24 @@ function extractStatsForEntity(call, type, context, prefixes) {
     const keywords = STAT_KEYWORDS[field] || [field]
     let resolved
 
+    const positionIndex = positional[field]
+    if (positionIndex !== undefined) {
+      const positionalArg = call.args[positionIndex]
+      if (positionalArg !== undefined) {
+        resolved = resolver ? resolver.resolveValue(positionalArg, `${type}.${field}`) : positionalArg
+      }
+    }
+
     // Search within call arguments first
-    for (const arg of call.args) {
-      const ident = extractIdentifier(arg)
-      if (!ident) continue
-      const tokens = identifierTokens(ident)
-      if (tokens.some(t => keywords.includes(t))) {
-        resolved = resolver ? resolver.resolveValue(arg, `${type}.${field}`) : undefined
-        if (resolved !== undefined) break
+    if (resolved === undefined) {
+      for (const arg of call.args) {
+        const ident = extractIdentifier(arg)
+        if (!ident) continue
+        const tokens = identifierTokens(ident)
+        if (tokens.some(t => keywords.includes(t))) {
+          resolved = resolver ? resolver.resolveValue(arg, `${type}.${field}`) : undefined
+          if (resolved !== undefined) break
+        }
       }
     }
 
@@ -1175,6 +1261,7 @@ function identifierTokens(name) {
 function toNumber(value) {
   if (value === undefined || value === null) return undefined
   if (typeof value === 'number') return value
+  if (typeof value === 'boolean') return value ? 1 : 0
   if (typeof value === 'string' && value.trim() !== '') {
     const num = Number(value)
     return Number.isNaN(num) ? undefined : num

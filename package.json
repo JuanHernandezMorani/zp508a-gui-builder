@@ -1,0 +1,48 @@
+{
+  "name": "zp-builder-ui",
+  "version": "1.0.0",
+  "private": true,
+  "description": "UI para construir y gestionar mods Zombie Plague 5.0 (CS 1.6) con compilación one-click",
+  "main": "electron/main.cjs",
+  "type": "module",
+  "scripts": {
+    "dev": "cross-env NODE_ENV=development concurrently -k \"vite\" \"npm:dev:electron\"",
+    "dev:electron": "wait-on tcp:5173 && electron .",
+    "build": "vite build && electron-builder",
+    "start": "electron .",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "electron-store": "^8.1.0",
+    "fs-extra": "^11.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@vitejs/plugin-react": "^4.3.2",
+    "concurrently": "^9.0.0",
+    "cross-env": "^10.0.0",
+    "electron": "^31.0.0",
+    "electron-builder": "^24.13.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.6.2",
+    "vite": "^5.4.2",
+    "wait-on": "^7.2.0"
+  },
+  "build": {
+    "appId": "com.juani.zpbuilder",
+    "files": [
+      "dist/**",
+      "electron/**",
+      "assets/**",
+      "systems/**",
+      "input/**",
+      "build/**",
+      "preload/**",
+      "tools/**"
+    ],
+    "directories": {
+      "buildResources": "assets"
+    }
+  }
+}

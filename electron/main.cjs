@@ -4,7 +4,7 @@ const fs = require('fs')
 const url = require('url')
 const fse = require('fs-extra')
 const { spawn, spawnSync } = require('child_process')
-const { parseSMAFile } = require('./smaParser.cjs')
+const { parseSMAEntities, normalizeName } = require('./smaParser.cjs')
 
 const APP_DIRS = {
   input: path.join(process.cwd(), 'input'),
@@ -364,61 +364,51 @@ ipcMain.handle('scan:sma', async () => {
 
   for (const p of files) {
     const raw = fs.readFileSync(p, 'utf-8')
-    const text = raw.toLowerCase()
     const fname = path.basename(p)
-    const fnameLower = fname.toLowerCase()
     if (/_api\.sma$/i.test(fname) || /^amx_/i.test(fname) || /^cs_/i.test(fname)) continue
 
-    const parsedEntities = parseSMAFile(p, raw)
-    const fileBase = path.basename(p, '.sma')
+    const parsedEntities = parseSMAEntities(p, raw)
+    scanned.push(...parsedEntities)
+  }
 
-    if (parsedEntities.length === 0) {
-      const fallbackType = detectFallbackType(text, fnameLower)
-      if (fallbackType) {
-        scanned.push({
-          id: cryptoRandomId(),
-          name: fileBase,
-          fileName: fileBase,
-          type: fallbackType,
-          enabled: true,
-          source: 'scan',
-          stats: emptyStatsForType(fallbackType),
-          meta: { detection: 'fallback' },
-          paths: { models: [], sounds: [], sprites: [] }
-        })
+  const dedupedByKey = new Map()
+  for (const item of scanned) {
+    const normalized = normalizeName(item.meta?.normalizedName || item.name)
+    const key = `${item.type}|${normalized}`
+    if (!dedupedByKey.has(key)) {
+      dedupedByKey.set(key, item)
+    } else {
+      const existing = dedupedByKey.get(key)
+      const conflicts = Array.isArray(existing.meta?.conflicts) ? [...existing.meta.conflicts] : []
+      conflicts.push({ originFile: item.meta?.originFile, registerLine: item.meta?.registerLine })
+      const existingWarnings = Array.isArray(existing.meta?.warnings) ? existing.meta.warnings : []
+      const newWarnings = Array.isArray(item.meta?.warnings) ? item.meta.warnings : []
+      const warnings = Array.from(new Set([...existingWarnings, ...newWarnings]))
+      existing.meta = {
+        ...(existing.meta || {}),
+        conflicts,
+        warnings,
+        normalizedName: existing.meta?.normalizedName || normalized
       }
-      continue
-    }
-
-    for (const entity of parsedEntities) {
-      const normalizedPaths = normalizeEntityPaths(entity.paths)
-      scanned.push({
-        id: cryptoRandomId(),
-        name: entity.name || fileBase,
-        fileName: entity.fileName || fileBase,
-        type: entity.type,
-        enabled: true,
-        source: 'scan',
-        stats: entity.stats || emptyStatsForType(entity.type),
-        meta: entity.meta && typeof entity.meta === 'object' ? entity.meta : {},
-        paths: normalizedPaths
-      })
     }
   }
 
+  const deduped = Array.from(dedupedByKey.values())
   const db = readDB()
 
   // 1) Limpieza suave: quita duplicados existentes por la misma clave (por si ya había ruido previo)
   const byKey = new Map()
   for (const it of db.items) {
-    const k = `${it.type}|${(it.name||'').toLowerCase()}|${(it.fileName||'').toLowerCase()}`
+    const normalized = normalizeName((it.meta && it.meta.normalizedName) || it.name)
+    const k = `${it.type}|${normalized}`
     if (!byKey.has(k)) byKey.set(k, it) // conserva el primero (y su "enabled")
   }
   db.items = Array.from(byKey.values())
 
   // 2) Merge: si la entidad ya existe, conserva "enabled" anterior
-  for (const it of scanned) {
-    const k = `${it.type}|${(it.name||'').toLowerCase()}|${(it.fileName||'').toLowerCase()}`
+  for (const it of deduped) {
+    const normalized = normalizeName(it.meta?.normalizedName || it.name)
+    const k = `${it.type}|${normalized}`
     if (byKey.has(k)) {
       const prev = byKey.get(k)
       it.enabled = prev.enabled // preserva estado

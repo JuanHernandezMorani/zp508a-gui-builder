@@ -20,18 +20,68 @@ const SECTIONS: { key: ZPType | "model" | "sprite" | "sound", label: string }[] 
 function uuid() { return Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10) }
 function sanitizeFileName(s: string) { return s.trim().toLowerCase().replace(/\s+/g, '-').replace(/[^a-z0-9-_]/g, '') }
 
-const emptyItem = (type: ZPType): ZPItem => ({ 
-  id: uuid(), 
-  name: '', 
-  fileName: '', 
-  type, 
-  enabled: true, 
-  description: '',
-  stats: getDefaultStats(type), 
-  meta: {}, 
-  paths: { models: [], sounds: [], sprites: [] }, 
-  source: 'ui' 
-} as any)
+const emptyItem = (type: ZPType): ZPItem => {
+  const base = {
+    id: uuid(),
+    name: '',
+    fileName: '',
+    enabled: true,
+    description: '',
+    meta: {},
+    paths: { models: [], sounds: [], sprites: [] },
+    source: 'ui' as const
+  }
+
+  switch (type) {
+    case 'zombie_class':
+      return { ...base, type: 'zombie_class', stats: getDefaultStats('zombie_class') as ZombieStats }
+    case 'human_class':
+      return { ...base, type: 'human_class', stats: getDefaultStats('human_class') as HumanStats }
+    case 'zombie_special':
+      return { ...base, type: 'zombie_special', stats: getDefaultStats('zombie_special') as ZombieStats }
+    case 'human_special':
+      return { ...base, type: 'human_special', stats: getDefaultStats('human_special') as HumanStats }
+    case 'weapon':
+      return { ...base, type: 'weapon', stats: getDefaultStats('weapon') as WeaponStats }
+    case 'shop_item':
+      return { ...base, type: 'shop_item', stats: getDefaultStats('shop_item') as ShopItemStats }
+    case 'mode':
+      return { ...base, type: 'mode', stats: {} }
+    case 'system':
+    default:
+      return { ...base, type: 'system', stats: {} }
+  }
+}
+
+function cloneZPItem<T extends ZPItem>(item: T): T {
+  return {
+    ...item,
+    stats: item.stats ? { ...item.stats } : {},
+    meta: item.meta ? { ...item.meta } : {},
+    paths: {
+      models: [...(item.paths?.models || [])],
+      sounds: [...(item.paths?.sounds || [])],
+      sprites: [...(item.paths?.sprites || [])]
+    }
+  } as T
+}
+
+function sanitizePathsForType(type: ZPType, paths?: { models?: string[], sounds?: string[], sprites?: string[] }) {
+  const unique = (values?: string[]) => Array.from(new Set((values || []).map(v => v.trim()).filter(Boolean)))
+  const base = {
+    models: unique(paths?.models),
+    sounds: unique(paths?.sounds),
+    sprites: unique(paths?.sprites)
+  }
+  if (type === 'mode') {
+    return { models: [], sounds: [], sprites: [] }
+  }
+  if (['human_class', 'zombie_class', 'human_special', 'zombie_special'].includes(type)) {
+    const filteredModels = base.models.filter(m => !m.toLowerCase().endsWith('.spr'))
+    return { models: filteredModels, sounds: [], sprites: [] }
+  }
+  return base
+}
 
 function getDefaultStats(type: ZPType): any {
   switch (type) {
@@ -253,7 +303,50 @@ export default function App() {
 }
 
 function Editor({ item, onClose, onSave }:{ item: ZPItem, onClose: ()=>void, onSave: (it: ZPItem)=>void }) {
-  const [draft, setDraft] = useState<ZPItem>({...item})
+  const [draft, setDraft] = useState<ZPItem>(() => cloneZPItem(item))
+
+  useEffect(() => {
+    setDraft(cloneZPItem(item))
+  }, [item])
+
+  const isClass = ['human_class', 'zombie_class', 'human_special', 'zombie_special'].includes(draft.type)
+  const isMode = draft.type === 'mode'
+  const showModels = !isMode
+  const showSounds = !isMode && !isClass
+  const showSprites = !isMode && !isClass
+
+  const currentPaths = draft.paths || { models: [], sounds: [], sprites: [] }
+
+  const updatePaths = (kind: 'models' | 'sounds' | 'sprites', values: string[]) => {
+    setDraft(prev => {
+      const prevPaths = prev.paths || { models: [], sounds: [], sprites: [] }
+      return {
+        ...prev,
+        paths: {
+          models: kind === 'models' ? values : [...prevPaths.models],
+          sounds: kind === 'sounds' ? values : [...prevPaths.sounds],
+          sprites: kind === 'sprites' ? values : [...prevPaths.sprites]
+        }
+      }
+    })
+  }
+
+  const handleSave = () => {
+    const trimmedName = (draft.name || '').trim()
+    if (!trimmedName) {
+      window.alert('El nombre es obligatorio')
+      return
+    }
+    const sanitizedPaths = sanitizePathsForType(draft.type, draft.paths)
+    const prepared: ZPItem = {
+      ...draft,
+      name: trimmedName,
+      fileName: (draft.fileName || '').trim(),
+      paths: sanitizedPaths,
+      meta: draft.meta ? { ...draft.meta } : {}
+    }
+    onSave(prepared)
+  }
 
   const renderSpecificFields = () => {
     switch (draft.type) {
@@ -347,16 +440,50 @@ function Editor({ item, onClose, onSave }:{ item: ZPItem, onClose: ()=>void, onS
           </div>
         </fieldset>
 
-        <fieldset style={{marginTop:12}}>
-          <legend>Paths (models/sounds/sprites)</legend>
-          <ArrayEdit label="Models" arr={draft.paths?.models||[]} onChange={(a)=>setDraft({...draft, paths:{...(draft.paths||{}), models:a}})} />
-          <ArrayEdit label="Sounds" arr={draft.paths?.sounds||[]} onChange={(a)=>setDraft({...draft, paths:{...(draft.paths||{}), sounds:a}})} />
-          <ArrayEdit label="Sprites" arr={draft.paths?.sprites||[]} onChange={(a)=>setDraft({...draft, paths:{...(draft.paths||{}), sprites:a}})} />
-        </fieldset>
+        {!isMode && (
+          <fieldset style={{marginTop:12}}>
+            <legend>Paths (models/sounds/sprites)</legend>
+            {showModels && (
+              <ArrayEdit
+                label="Models"
+                arr={currentPaths.models}
+                onChange={(a)=>updatePaths('models', a)}
+                onAddAttempt={(value) => {
+                  if (isClass && value.trim().toLowerCase().endsWith('.spr')) {
+                    window.alert('Sprites no aplican a clases en ZP 5.0')
+                    return false
+                  }
+                  return true
+                }}
+              />
+            )}
+            {showSounds && (
+              <ArrayEdit
+                label="Sounds"
+                arr={currentPaths.sounds}
+                onChange={(a)=>updatePaths('sounds', a)}
+              />
+            )}
+            {showSprites && (
+              <ArrayEdit
+                label="Sprites"
+                arr={currentPaths.sprites}
+                onChange={(a)=>updatePaths('sprites', a)}
+                onAddAttempt={(value) => {
+                  if (isClass) {
+                    window.alert('Sprites no aplican a clases en ZP 5.0')
+                    return false
+                  }
+                  return true
+                }}
+              />
+            )}
+          </fieldset>
+        )}
 
         <div style={{marginTop:12, display:'flex', justifyContent:'flex-end', gap:8}}>
           <button onClick={onClose}>Cancelar</button>
-          <button onClick={()=>onSave(draft)}>Guardar</button>
+          <button onClick={handleSave}>Guardar</button>
         </div>
       </div>
     </div>
@@ -373,14 +500,21 @@ function TextareaKV({ obj, onChange }:{ obj: Record<string, any>, onChange: (o: 
   return <textarea value={txt} onChange={e=>setTxt(e.target.value)} rows={6} style={{width:'100%'}}/>
 }
 
-function ArrayEdit({ label, arr, onChange }:{ label: string, arr: string[], onChange:(a:string[])=>void }){
+function ArrayEdit({ label, arr, onChange, onAddAttempt, disabled }:{ label: string, arr: string[], onChange:(a:string[])=>void, onAddAttempt?: (value: string)=>boolean, disabled?: boolean }){
   const [val, setVal] = useState('')
   return (
     <div style={{marginBottom:8}}>
       <b>{label}</b>
       <div style={{display:'flex', gap:8, marginTop:4}}>
-        <input value={val} onChange={e=>setVal(e.target.value)} placeholder="ruta/model.mdl"/>
-        <button onClick={()=>{ if(val.trim()){ onChange([...arr, val.trim()]); setVal('') } }}>Agregar</button>
+        <input value={val} onChange={e=>setVal(e.target.value)} placeholder="ruta/model.mdl" disabled={disabled}/>
+        <button onClick={()=>{
+          const cleaned = val.trim()
+          if (!cleaned) return
+          if (onAddAttempt && onAddAttempt(cleaned) === false) { setVal(''); return }
+          if (arr.includes(cleaned)) { setVal(''); return }
+          onChange([...arr, cleaned])
+          setVal('')
+        }} disabled={disabled}>Agregar</button>
       </div>
       <ul>{arr.map((x,i)=>(<li key={i}>{x} <button onClick={()=>onChange(arr.filter((_,j)=>j!==i))}>x</button></li>))}</ul>
     </div>

@@ -1,4 +1,5 @@
 const path = require('path')
+const crypto = require('crypto')
 
 const REGISTER_FUNCTIONS = [
   'zp_class_zombie_register',
@@ -10,6 +11,12 @@ const REGISTER_FUNCTIONS = [
   'zp_weapon_register',
   'zp_register_extra_item',
   'zp_register_gamemode'
+]
+
+const SUPPLEMENTAL_FUNCTIONS = [
+  'zp_class_zombie_register_kb',
+  'zp_class_zombie_register_model',
+  'zp_class_human_register_model'
 ]
 
 const ESCAPE_REGEX = /[-/\\^$*+?.()|[\]{}]/g
@@ -62,8 +69,9 @@ const DEFAULT_VALUES = {
   human_special: { health: 100, speed: 240, gravity: 1.0, armor: 0 },
   zombie_class: { health: 2000, speed: 250, gravity: 1.0, knockback: 1.0 },
   zombie_special: { health: 2000, speed: 250, gravity: 1.0, knockback: 1.0 },
-  weapon: { damage: 0, clip_capacity: 0, fire_rate: 0, reload_time: 0, cost: 0 },
-  shop_item: { cost: 0, team: 0, unlimited: 0 }
+  weapon: { damage: undefined, clip_capacity: undefined, fire_rate: undefined, reload_time: undefined, cost: undefined },
+  shop_item: { cost: undefined, team: undefined, unlimited: undefined },
+  mode: {}
 }
 
 const HARDCODED_CONSTANTS = {
@@ -84,6 +92,8 @@ class ValueResolver {
     this.variables = new Map()
     this.resolutionStack = new Set()
     this.warnedCircular = new Set()
+    this.circularWarnings = new Set()
+    this.circularHandler = null
   }
 
   setVariable(name, value) {
@@ -97,6 +107,10 @@ class ValueResolver {
     }
     this.resolutionStack.add(variableName)
     return false
+  }
+
+  onCircular(handler) {
+    this.circularHandler = typeof handler === 'function' ? handler : null
   }
 
   resolveValue(expression, context = 'global') {
@@ -131,7 +145,9 @@ class ValueResolver {
     if (isCircular) {
       const fileKey = `${(container && container.filePath) || 'unknown'}|${name}`
       if (!this.warnedCircular.has(fileKey)) {
-        this.warn(`Dependencia circular detectada: ${name}`)
+        const message = `circular: ${name}`
+        this.circularWarnings.add(message)
+        if (this.circularHandler) this.circularHandler(message)
         this.warnedCircular.add(fileKey)
       }
       return undefined
@@ -163,75 +179,177 @@ class ValueResolver {
   }
 }
 
-function parseSMAFile(filePath, rawText) {
-  const warnings = new Set()
-  const warn = msg => warnings.add(msg)
+function parseSMAEntities(filePath, rawText) {
+  const context = { definitions: null, resolver: null, warn: null, currentWarnings: null }
+  const fileWarnings = new Set()
+  const globalWarnings = new Set()
+
+  const warn = (message) => {
+    if (!message) return
+    const text = String(message)
+    fileWarnings.add(text)
+    if (context.currentWarnings) context.currentWarnings.add(text)
+    else globalWarnings.add(text)
+  }
 
   const commentless = stripComments(rawText)
   const definitions = collectDefinitions(rawText, commentless, warn)
   definitions.filePath = filePath
   const resolver = new ValueResolver(definitions, warn)
-  const context = { definitions, warn, resolver }
+  context.definitions = definitions
+  context.resolver = resolver
+  context.warn = warn
+  resolver.onCircular((message) => warn(message))
+
   const resources = collectResources(rawText, commentless, context)
   const registerCalls = findRegisterCalls(rawText)
 
   const fileBase = path.basename(filePath, '.sma')
+  const originFile = computeOriginFile(filePath)
+  const entitiesByKey = new Map()
+  const orderedEntities = []
 
-  const entities = []
   for (const call of registerCalls) {
     const lowerName = call.name.toLowerCase()
     const config = REGISTER_TYPE_RESOLVERS.find(r => r.match(lowerName))
     if (!config) continue
 
-    const type = config.type
     const prefixes = collectPrefixes(call.args)
+    call._prefixes = prefixes
 
-    const name = resolveEntityName(call, context, fileBase)
-    const stats = extractStatsForEntity(call, type, context, prefixes)
-    const paths = collectPathsFromArgs(call, type, context)
+    const callWarnings = new Set()
+    context.currentWarnings = callWarnings
 
-    entities.push({
-      type,
-      name,
+    const nameInfo = resolveEntityName(call, context, fileBase)
+    const rawName = nameInfo.value || call.assignedVar || fileBase
+    const cleanName = typeof rawName === 'string' ? rawName.trim() : String(rawName || '')
+    const normalizedName = normalizeName(cleanName)
+    const stats = extractStatsForEntity(call, config.type, context, prefixes)
+    const initialPaths = collectPathsFromArgs(call, config.type, context)
+    const pathSets = createPathSets(config.type, initialPaths)
+
+    const entity = {
+      id: '',
+      type: config.type,
+      name: cleanName,
       fileName: fileBase,
+      enabled: true,
+      source: 'scan',
       stats,
-      paths,
+      paths: { models: [], sounds: [], sprites: [] },
       meta: {
+        originFile,
+        registerLine: call.line,
         registerFunction: call.name,
-        registerArgs: call.args
+        registerVar: call.assignedVar || undefined,
+        displayNameToken: nameInfo.token || undefined,
+        warnings: callWarnings,
+        conflicts: [],
+        bundle: fileBase,
+        normalizedName
       },
-      _registerIndex: call.index
-    })
+      _registerIndex: call.index,
+      _prefixes: prefixes,
+      _pathSets: pathSets
+    }
+
+    context.currentWarnings = null
+
+    const key = `${entity.type}|${normalizedName}`
+    const existing = entitiesByKey.get(key)
+    if (!existing) {
+      entitiesByKey.set(key, entity)
+      orderedEntities.push(entity)
+    } else {
+      const preferred = choosePreferredEntity(existing, entity)
+      const other = preferred === existing ? entity : existing
+      const preferredWarnings = ensureWarningSet(preferred.meta.warnings)
+      const otherWarnings = ensureWarningSet(other.meta.warnings)
+      otherWarnings.forEach((w) => preferredWarnings.add(w))
+      preferred.meta.warnings = preferredWarnings
+
+      const conflicts = Array.isArray(preferred.meta.conflicts) ? preferred.meta.conflicts : []
+      conflicts.push({
+        originFile: other.meta?.originFile || preferred.meta?.originFile,
+        registerLine: other.meta?.registerLine
+      })
+      preferred.meta.conflicts = conflicts
+
+      if (preferred !== existing) {
+        entitiesByKey.set(key, preferred)
+        const idx = orderedEntities.indexOf(existing)
+        if (idx !== -1) orderedEntities[idx] = preferred
+      }
+    }
   }
 
-  assignResourcesToEntities(entities, resources)
+  context.currentWarnings = null
 
-  for (const entity of entities) {
-    entity.paths.models = Array.from(new Set(entity.paths.models))
-    entity.paths.sounds = Array.from(new Set(entity.paths.sounds))
-    entity.paths.sprites = Array.from(new Set(entity.paths.sprites))
-  }
-
-  if (entities.length === 0 && /zp_register_(?:zombie|human|extra|weapon|gamemode)/i.test(rawText)) {
+  if (!orderedEntities.length && /zp_register_(?:zombie|human|extra|weapon|gamemode)/i.test(rawText)) {
     warn('No se pudieron extraer entidades a pesar de encontrar llamadas de registro.')
   }
 
-  if (warnings.size) {
-    const pref = `[SMA Parser] ${path.basename(filePath)}: `
-    warnings.forEach(msg => console.warn(pref + msg))
+  const supplementalCalls = findSupplementalCalls(rawText)
+  applySupplementalCalls(supplementalCalls, orderedEntities, context)
+
+  assignResourcesToEntities(orderedEntities, resources)
+
+  const globalWarningArray = Array.from(globalWarnings)
+  for (const entity of orderedEntities) {
+    const warningSet = ensureWarningSet(entity.meta.warnings)
+    for (const msg of globalWarningArray) warningSet.add(msg)
+    entity.meta.warnings = Array.from(warningSet)
+    if (!Array.isArray(entity.meta.conflicts)) entity.meta.conflicts = []
+    const normalizedName = entity.meta.normalizedName || normalizeName(entity.name)
+    entity.meta.normalizedName = normalizedName
+    entity.id = buildDeterministicId(entity.meta.originFile, entity.type, normalizedName)
+    finalizeEntityPaths(entity)
   }
 
-  // ...después de asignar resources y normalizar:
-  const seen = new Set()
-  const deduped = []
-  for (const e of entities) {
-    const key = `${e.type}|${(e.name || '').toLowerCase()}|${(e.fileName || '').toLowerCase()}`
-    if (!seen.has(key)) {
-      seen.add(key)
-      deduped.push(e)
+  if (fileWarnings.size) {
+    const pref = `[SMA Parser] ${path.basename(filePath)}: `
+    for (const message of fileWarnings) {
+      console.warn(pref + message)
     }
   }
-  return deduped
+
+  return orderedEntities
+}
+
+function ensureWarningSet(value) {
+  if (value instanceof Set) return value
+  const set = new Set()
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      if (!entry) continue
+      set.add(String(entry))
+    }
+  } else if (value) {
+    set.add(String(value))
+  }
+  return set
+}
+
+function computeOriginFile(filePath) {
+  const inputRoot = path.join(process.cwd(), 'input')
+  let relative = path.relative(inputRoot, filePath)
+  if (!relative || relative.startsWith('..')) {
+    relative = path.basename(filePath)
+  }
+  const normalized = normalizePath(relative)
+  return normalized || relative.replace(/\\/g, '/').trim()
+}
+
+function normalizeName(name) {
+  if (!name) return ''
+  const trimmed = String(name).trim().toLowerCase()
+  return trimmed.replace(/\s+/g, ' ')
+}
+
+function buildDeterministicId(originFile, type, normalizedName) {
+  const hash = crypto.createHash('sha1')
+  hash.update(`${originFile || ''}|${type || ''}|${normalizedName || ''}`)
+  return hash.digest('hex')
 }
 
 function stripComments(text) {
@@ -379,7 +497,12 @@ function collectResources(rawText, commentless, context) {
 }
 
 function findRegisterCalls(rawText) {
-  const pat = '\\b(' + REGISTER_FUNCTIONS.map(esc).join('|') + ')\\s*\\('
+  return findCalls(rawText, REGISTER_FUNCTIONS)
+}
+
+function findCalls(rawText, functionNames) {
+  if (!Array.isArray(functionNames) || functionNames.length === 0) return []
+  const pat = '\\b(' + functionNames.map(esc).join('|') + ')\\s*\\('
   const regex = new RegExp(pat, 'gi')
   const calls = []
   let match
@@ -390,9 +513,81 @@ function findRegisterCalls(rawText) {
     if (!extracted) continue
     const args = parseArguments(extracted.args)
     const line = rawText.slice(0, match.index).split(/\r?\n/).length
-    calls.push({ name, args, index: match.index, line })
+    const assignedVar = detectAssignedVariable(rawText, match.index)
+    calls.push({ name, args, index: match.index, line, assignedVar })
   }
   return calls
+}
+
+function detectAssignedVariable(text, callIndex) {
+  const before = text.slice(0, callIndex)
+  const lastSemicolon = before.lastIndexOf(';')
+  const lastNewline = before.lastIndexOf('\n')
+  const start = Math.max(lastSemicolon, lastNewline)
+  const snippet = before.slice(start + 1).trim()
+  if (!snippet) return null
+  const match = snippet.match(/([A-Za-z_]\w*)\s*(?:\[[^\]]*\])?\s*=\s*$/)
+  return match ? match[1] : null
+}
+
+const SUPPLEMENTAL_HANDLERS = {
+  zp_class_zombie_register_kb: { kind: 'stat', field: 'knockback' },
+  zp_class_zombie_register_model: { kind: 'models' },
+  zp_class_human_register_model: { kind: 'models' }
+}
+
+function findSupplementalCalls(rawText) {
+  return findCalls(rawText, SUPPLEMENTAL_FUNCTIONS)
+}
+
+function applySupplementalCalls(calls, entities, context) {
+  if (!Array.isArray(calls) || !calls.length) return
+  if (!Array.isArray(entities) || !entities.length) return
+  const resolver = context && context.resolver
+  const registry = new Map()
+  for (const entity of entities) {
+    const varName = entity && entity.meta && entity.meta.registerVar
+    if (varName) registry.set(varName.toLowerCase(), entity)
+  }
+
+  for (const call of calls) {
+    const handler = SUPPLEMENTAL_HANDLERS[call.name.toLowerCase()]
+    if (!handler || !call.args.length) continue
+    const ident = extractIdentifier(call.args[0])
+    if (!ident) continue
+    const entity = registry.get(ident.toLowerCase())
+    if (!entity) continue
+
+    const warningSet = ensureWarningSet(entity.meta.warnings)
+    entity.meta.warnings = warningSet
+    context.currentWarnings = warningSet
+
+    if (handler.kind === 'stat') {
+      const expr = call.args[1]
+      const resolved = expr && resolver ? resolver.resolveValue(expr, `${entity.type}.${handler.field}`) : undefined
+      const numeric = toNumber(resolved)
+      if (numeric === undefined) {
+        context.warn(`No se pudo resolver ${handler.field} adicional (${call.name} línea ${call.line})`)
+      } else {
+        entity.stats[handler.field] = numeric
+      }
+    } else if (handler.kind === 'models') {
+      const expr = call.args[1]
+      if (!expr) {
+        context.warn(`No se pudo resolver modelo adicional (${call.name} línea ${call.line})`)
+      } else {
+        const resolved = resolver ? resolver.resolveValue(expr, 'paths') : undefined
+        const strings = flattenStringValues(resolved)
+        if (!strings.length) {
+          context.warn(`No se pudo resolver modelo adicional (${call.name} línea ${call.line})`)
+        }
+        for (const value of strings) addResourceToEntity(entity, 'models', value)
+      }
+    }
+
+    context.currentWarnings = null
+  }
+  context.currentWarnings = null
 }
 
 function extractCall(text, startIndex) {
@@ -595,6 +790,11 @@ function parseExpression(expression, resolver, context) {
     return inner !== undefined ? Number(inner) : undefined
   }
 
+  const viewAsMatch = trimmed.match(/^view_as<[^>]+>\s*\((.+)\)$/i)
+  if (viewAsMatch) {
+    return parseExpression(viewAsMatch[1], resolver, context)
+  }
+
   const pcvarMatch = trimmed.match(/^get_pcvar_(?:num|float)\s*\((.+)\)$/i)
   if (pcvarMatch) {
     const args = parseArguments(pcvarMatch[1])
@@ -708,16 +908,23 @@ function resolveEntityName(call, context, fallback) {
   for (const arg of call.args) {
     const ident = extractIdentifier(arg)
     if (ident && HARDCODED_CONSTANTS[ident] !== undefined) {
-      return HARDCODED_CONSTANTS[ident]
+      return { value: HARDCODED_CONSTANTS[ident], token: ident }
     }
   }
   for (const arg of call.args) {
+    const trimmed = typeof arg === 'string' ? arg.trim() : ''
+    if (/^[A-Za-z_]\w*$/.test(trimmed)) {
+      const resolved = resolver ? resolver.resolveValue(trimmed, 'name') : undefined
+      const strings = flattenStringValues(resolved)
+      const str = strings.find(Boolean)
+      if (typeof str === 'string' && str.length) return { value: str, token: trimmed }
+    }
     const value = resolver ? resolver.resolveValue(arg, 'name') : undefined
     const strings = flattenStringValues(value)
     const str = strings.find(Boolean)
-    if (typeof str === 'string' && str.length) return str
+    if (typeof str === 'string' && str.length) return { value: str, token: undefined }
   }
-  return fallback
+  return { value: fallback, token: undefined }
 }
 
 function collectPathsFromArgs(call, type, context) {
@@ -741,40 +948,151 @@ function collectPathsFromArgs(call, type, context) {
 
 function categorizeResourcePath(type, value, models, sounds, sprites) {
   if (!value || typeof value !== 'string') return
-  const lower = value.toLowerCase()
+  if (type === 'mode') return
+  const normalized = normalizePath(value)
+  if (!normalized) return
+  const lower = normalized.toLowerCase()
   const ext = path.extname(lower)
   if (!ext) return
-  if (RESOURCE_EXTENSIONS.models.includes(ext)) models.add(value)
-  else if (RESOURCE_EXTENSIONS.sounds.includes(ext)) {
-    if (!CLASS_TYPES.has(type)) sounds.add(value)
+  if (RESOURCE_EXTENSIONS.models.includes(ext)) {
+    models.add(normalized)
+  } else if (RESOURCE_EXTENSIONS.sounds.includes(ext)) {
+    if (!CLASS_TYPES.has(type)) sounds.add(normalized)
   } else if (RESOURCE_EXTENSIONS.sprites.includes(ext)) {
-    if (!CLASS_TYPES.has(type)) sprites.add(value)
+    if (!CLASS_TYPES.has(type)) sprites.add(normalized)
   }
 }
 
 function assignResourcesToEntities(entities, resources) {
   if (!entities.length) return
   for (const res of resources) {
-    const ext = path.extname(res.value.toLowerCase())
+    const normalizedValue = normalizePath(res.value)
+    if (!normalizedValue) continue
+    const ext = path.extname(normalizedValue.toLowerCase())
     if (!ext) continue
-    let target = null
-    let minDistance = Infinity
+
+    let chosen = null
+    let bestScore = -Infinity
+    let bestDistance = Infinity
+
     for (const entity of entities) {
+      const kind = extensionToKind(ext)
+      if (!kind || !isResourceAllowedForType(entity.type, kind)) continue
+
+      const prefixes = entity._prefixes || new Set()
+      const lowerValue = normalizedValue.toLowerCase()
+      let score = 0
+      for (const prefix of prefixes) {
+        if (!prefix) continue
+        if (lowerValue.includes(prefix)) score += 2
+      }
+      let distance = Infinity
       if (res.index >= entity._registerIndex) {
-        const dist = res.index - entity._registerIndex
-        if (dist < minDistance) {
-          target = entity
-          minDistance = dist
-        }
+        distance = res.index - entity._registerIndex
+      }
+      if (score > bestScore || (score === bestScore && distance < bestDistance)) {
+        chosen = entity
+        bestScore = score
+        bestDistance = distance
       }
     }
-    if (!target) target = entities[0]
-    if (CLASS_TYPES.has(target.type) && ext !== '.mdl') continue
-    if (RESOURCE_EXTENSIONS.models.includes(ext)) target.paths.models.push(res.value)
-    else if (RESOURCE_EXTENSIONS.sounds.includes(ext)) target.paths.sounds.push(res.value)
-    else if (RESOURCE_EXTENSIONS.sprites.includes(ext)) target.paths.sprites.push(res.value)
+
+    if (!chosen) {
+      chosen = entities.reduce((acc, entity) => {
+        const distance = res.index >= entity._registerIndex ? res.index - entity._registerIndex : Infinity
+        if (!acc) return entity
+        const accDistance = res.index >= acc._registerIndex ? res.index - acc._registerIndex : Infinity
+        return distance < accDistance ? entity : acc
+      }, null) || entities[0]
+    }
+
+    const kind = extensionToKind(ext)
+    if (!kind) continue
+    addResourceToEntity(chosen, kind, normalizedValue)
   }
-  for (const entity of entities) delete entity._registerIndex
+
+  for (const entity of entities) {
+    delete entity._registerIndex
+    delete entity._prefixes
+  }
+}
+
+function extensionToKind(ext) {
+  const lower = ext.toLowerCase()
+  if (RESOURCE_EXTENSIONS.models.includes(lower)) return 'models'
+  if (RESOURCE_EXTENSIONS.sounds.includes(lower)) return 'sounds'
+  if (RESOURCE_EXTENSIONS.sprites.includes(lower)) return 'sprites'
+  return null
+}
+
+function isResourceAllowedForType(type, kind) {
+  if (type === 'mode') return false
+  if (CLASS_TYPES.has(type)) return kind === 'models'
+  return true
+}
+
+function createPathSets(type, initial) {
+  const sets = {
+    models: new Set(),
+    sounds: new Set(),
+    sprites: new Set()
+  }
+  if (!initial) return sets
+  if (Array.isArray(initial.models)) {
+    for (const value of initial.models) addPathToSet(sets, type, 'models', value)
+  }
+  if (Array.isArray(initial.sounds)) {
+    for (const value of initial.sounds) addPathToSet(sets, type, 'sounds', value)
+  }
+  if (Array.isArray(initial.sprites)) {
+    for (const value of initial.sprites) addPathToSet(sets, type, 'sprites', value)
+  }
+  return sets
+}
+
+function addPathToSet(sets, type, kind, value) {
+  if (!isResourceAllowedForType(type, kind)) return
+  const normalized = normalizePath(value)
+  if (!normalized) return
+  sets[kind].add(normalized)
+}
+
+function addResourceToEntity(entity, kind, value) {
+  if (!isResourceAllowedForType(entity.type, kind)) return
+  if (!entity._pathSets) {
+    entity._pathSets = createPathSets(entity.type, entity.paths || { models: [], sounds: [], sprites: [] })
+  }
+  const normalized = normalizePath(value)
+  if (!normalized) return
+  entity._pathSets[kind].add(normalized)
+}
+
+function finalizeEntityPaths(entity) {
+  const sets = entity._pathSets || createPathSets(entity.type, entity.paths)
+  const paths = { models: [], sounds: [], sprites: [] }
+  if (isResourceAllowedForType(entity.type, 'models')) paths.models = Array.from(sets.models)
+  if (isResourceAllowedForType(entity.type, 'sounds')) paths.sounds = Array.from(sets.sounds)
+  if (isResourceAllowedForType(entity.type, 'sprites')) paths.sprites = Array.from(sets.sprites)
+  entity.paths = paths
+  delete entity._pathSets
+}
+
+function choosePreferredEntity(a, b) {
+  const scoreA = scoreEntity(a)
+  const scoreB = scoreEntity(b)
+  if (scoreB > scoreA) return b
+  return a
+}
+
+function scoreEntity(entity) {
+  let score = 0
+  const stats = entity.stats || {}
+  for (const value of Object.values(stats)) {
+    if (value !== undefined && value !== null) score += 1
+  }
+  const sets = entity._pathSets || createPathSets(entity.type, entity.paths)
+  score += sets.models.size + sets.sounds.size + sets.sprites.size
+  return score
 }
 
 function extractStatsForEntity(call, type, context, prefixes) {
@@ -864,6 +1182,21 @@ function toNumber(value) {
   return undefined
 }
 
+function normalizePath(p) {
+  if (p === undefined || p === null) return null
+  let str = String(p).trim()
+  if (!str) return null
+  if ((str.startsWith('"') && str.endsWith('"')) || (str.startsWith('\'') && str.endsWith('\''))) {
+    str = str.slice(1, -1)
+  }
+  str = str.trim()
+  if (!str) return null
+  str = str.replace(/\\/g, '/').replace(/\/{2,}/g, '/').trim()
+  if (!str) return null
+  return str
+}
+
 module.exports = {
-  parseSMAFile
+  parseSMAEntities,
+  normalizeName
 }

@@ -12,7 +12,8 @@ const REGISTER_FUNCTIONS = [
   'zp_register_gamemode'
 ]
 
-function esc(s){ return s.replace(/[.*+?^${}()|[\]\]/g, '\$&') }
+const ESCAPE_REGEX = /[-/\\^$*+?.()|[\]{}]/g
+function esc(s){ return s.replace(ESCAPE_REGEX, '\\$&') }
 
 const REGISTER_TYPE_RESOLVERS = [
   { match: name => name.toLowerCase() === 'zp_class_zombie_register' || name.toLowerCase() === 'zp_register_zombie_class', type: 'zombie_class' },
@@ -56,13 +57,106 @@ const RESOURCE_EXTENSIONS = {
 
 const CLASS_TYPES = new Set(['zombie_class', 'human_class', 'zombie_special', 'human_special'])
 
+const DEFAULT_VALUES = {
+  human_class: {
+    health: 100,
+    speed: 240,
+    gravity: 1.0,
+    armor: 0
+  },
+  zombie_class: {
+    health: 2000,
+    speed: 250,
+    gravity: 1.0,
+    knockback: 1.0
+  }
+}
+
+class ValueResolver {
+  constructor(definitionContainer, warn) {
+    this.definitionContainer = definitionContainer || { definitions: new Map(), entries: [] }
+    this.warn = typeof warn === 'function' ? warn : () => {}
+    this.variables = new Map()
+    this.resolutionStack = new Set()
+  }
+
+  setVariable(name, value) {
+    if (!name) return
+    this.variables.set(name, value)
+  }
+
+  detectCircularDependency(variableName) {
+    if (this.resolutionStack.has(variableName)) {
+      const error = new Error(`Dependencia circular detectada: ${variableName}`)
+      error.code = 'CIRCULAR_DEPENDENCY'
+      throw error
+    }
+    this.resolutionStack.add(variableName)
+  }
+
+  resolveValue(expression, context = 'global') {
+    if (expression === undefined || expression === null) return undefined
+    const trimmed = typeof expression === 'string' ? expression.trim() : expression
+    if (trimmed === '') return undefined
+    if (typeof trimmed !== 'string') return trimmed
+    return parseExpression(trimmed, this, context)
+  }
+
+  resolveIdentifier(name, context = 'global') {
+    if (!name) return undefined
+    if (this.variables.has(name)) return this.variables.get(name)
+    const container = this.definitionContainer
+    const map = container && container.definitions
+    if (!map || !map.has(name)) return undefined
+    const entry = map.get(name)
+    if (!entry) return undefined
+    if (entry.cached !== undefined) return entry.cached
+
+    try {
+      this.detectCircularDependency(name)
+    } catch (err) {
+      if (err.code === 'CIRCULAR_DEPENDENCY') {
+        this.warn(err.message)
+        return undefined
+      }
+      throw err
+    }
+
+    let value
+    try {
+      if (entry.kind === 'alias' && entry.alias) {
+        value = this.resolveIdentifier(entry.alias, context)
+      } else if (entry.kind === 'array') {
+        value = parseArrayLiteral(entry.expr, this, context)
+      } else if (entry.kind === 'string') {
+        value = parseStringLiteral(entry.expr)
+      } else if (entry.expr) {
+        value = parseExpression(entry.expr, this, context)
+      }
+    } catch (err) {
+      this.warn(`Error al resolver ${name}: ${err.message}`)
+      value = undefined
+    } finally {
+      this.resolutionStack.delete(name)
+    }
+
+    if (value !== undefined) {
+      entry.cached = value
+      this.variables.set(name, value)
+    }
+    return value
+  }
+}
+
 function parseSMAFile(filePath, rawText) {
   const warnings = new Set()
   const warn = msg => warnings.add(msg)
 
   const commentless = stripComments(rawText)
   const definitions = collectDefinitions(rawText, commentless, warn)
-  const resources = collectResources(rawText, commentless, definitions, warn)
+  const resolver = new ValueResolver(definitions, warn)
+  const context = { definitions, warn, resolver }
+  const resources = collectResources(rawText, commentless, context)
   const registerCalls = findRegisterCalls(rawText)
 
   const fileBase = path.basename(filePath, '.sma')
@@ -74,11 +168,10 @@ function parseSMAFile(filePath, rawText) {
     if (!config) continue
 
     const type = config.type
-    const context = { definitions, warn }
     const prefixes = collectPrefixes(call.args)
 
     const name = resolveEntityName(call, context, fileBase)
-    const stats = extractStatsForEntity(call, type, context, prefixes, warn)
+    const stats = extractStatsForEntity(call, type, context, prefixes)
     const paths = collectPathsFromArgs(call, type, context)
 
     entities.push({
@@ -239,9 +332,10 @@ function collectDefinitions(rawText, commentless, warn) {
   return { definitions, entries: defEntries }
 }
 
-function collectResources(rawText, commentless, definitions, warn) {
+function collectResources(rawText, commentless, context) {
   const resources = []
-  const resolveContext = { definitions, warn }
+  const resolver = context && context.resolver
+  const warn = context && typeof context.warn === 'function' ? context.warn : () => {}
   const regex = /precache_(model|sound|generic)\s*\(/gi
   let match
   while ((match = regex.exec(commentless)) !== null) {
@@ -254,7 +348,7 @@ function collectResources(rawText, commentless, definitions, warn) {
     }
     const args = parseArguments(extracted.args)
     if (!args.length) continue
-    const value = resolveValue(args[0], resolveContext)
+    const value = resolver ? resolver.resolveValue(args[0], 'resource') : undefined
     const strings = flattenStringValues(value)
     for (const s of strings) {
       if (!s) continue
@@ -447,49 +541,66 @@ function detectKind(expr) {
   return 'expr'
 }
 
-function resolveValue(expr, context, stack = []) {
-  if (!expr) return undefined
-  const trimmed = expr.trim()
+function parseExpression(expression, resolver, context) {
+  if (!expression || typeof expression !== 'string') return undefined
+  const trimmed = expression.trim()
   if (!trimmed) return undefined
 
   if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-    return parseArrayLiteral(trimmed, context, stack)
+    return parseArrayLiteral(trimmed, resolver, context)
   }
 
   if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith('\'') && trimmed.endsWith('\''))) {
-    return parseStringLiteral(trimmed)
+    const parsed = parseStringLiteral(trimmed)
+    if (trimmed.startsWith('\'') && trimmed.endsWith('\'') && parsed.length === 1) {
+      return parsed.charCodeAt(0)
+    }
+    return parsed
+  }
+
+  const tagMatch = trimmed.match(/^(?:Float|_:Float|_:float|float|bool|Bool|_:bool|_:Bool):(.+)$/)
+  if (tagMatch) {
+    return parseExpression(tagMatch[1], resolver, context)
   }
 
   if (/^[-+]?0x[0-9a-f]+$/i.test(trimmed)) return parseInt(trimmed, 16)
   if (/^[-+]?\d+\.\d+(?:e[-+]?\d+)?$/i.test(trimmed)) return parseFloat(trimmed)
   if (/^[-+]?\d+$/.test(trimmed)) return parseInt(trimmed, 10)
 
-  const charMatch = trimmed.match(/^'([^'])'$/)
-  if (charMatch) return charMatch[1].charCodeAt(0)
-
   if (trimmed.startsWith('(') && trimmed.endsWith(')')) {
     const inner = trimmed.slice(1, -1)
-    const innerResolved = resolveValue(inner, context, stack)
+    const innerResolved = parseExpression(inner, resolver, context)
     if (innerResolved !== undefined) return innerResolved
   }
 
-  const funcMatch = trimmed.match(/^(float|_:float)\s*\((.*)\)$/i)
-  if (funcMatch) {
-    const inner = resolveValue(funcMatch[2], context, stack)
+  const numericWrapMatch = trimmed.match(/^(float|_:float)\s*\((.*)\)$/i)
+  if (numericWrapMatch) {
+    const inner = parseExpression(numericWrapMatch[2], resolver, context)
     return inner !== undefined ? Number(inner) : undefined
+  }
+
+  const pcvarMatch = trimmed.match(/^get_pcvar_(?:num|float)\s*\((.+)\)$/i)
+  if (pcvarMatch) {
+    const args = parseArguments(pcvarMatch[1])
+    const firstArg = args.length ? args[0] : null
+    const ident = firstArg ? extractIdentifier(firstArg) : null
+    if (ident && resolver) {
+      const value = resolver.resolveIdentifier(ident, context)
+      if (value !== undefined) return value
+    }
+    return undefined
   }
 
   const accessMatch = trimmed.match(/^([A-Za-z_]\w*)(\[[^\]]+\])+$/)
   if (accessMatch) {
     const baseName = accessMatch[1]
-    const indices = []
     const indexRegex = /\[([^\]]+)\]/g
-    let m
-    while ((m = indexRegex.exec(trimmed)) !== null) indices.push(m[1])
-    let baseValue = resolveIdentifier(baseName, context, stack)
-    for (const idxExpr of indices) {
+    let baseValue = resolver ? resolver.resolveIdentifier(baseName, context) : undefined
+    if (baseValue === undefined) return undefined
+    let match
+    while ((match = indexRegex.exec(trimmed)) !== null) {
       if (!Array.isArray(baseValue)) return undefined
-      const idx = resolveValue(idxExpr, context, stack)
+      const idx = parseExpression(match[1], resolver, context)
       if (idx === undefined) return undefined
       baseValue = baseValue[idx]
     }
@@ -497,53 +608,29 @@ function resolveValue(expr, context, stack = []) {
   }
 
   if (/^[A-Za-z_]\w*$/.test(trimmed)) {
-    return resolveIdentifier(trimmed, context, stack)
+    return resolver ? resolver.resolveIdentifier(trimmed, context) : undefined
   }
 
   const sanitized = trimmed.replace(/\b([A-Za-z_]\w*)\b/g, (match) => {
-    const val = resolveIdentifier(match, context, stack)
-    return val === undefined ? match : Number(val)
+    if (!resolver) return match
+    const val = resolver.resolveIdentifier(match, context)
+    if (val === undefined) return match
+    const num = Number(val)
+    return Number.isNaN(num) ? match : num
   })
 
-  if (/^[0-9+\-*/%().<>&|^~\s]+$/.test(sanitized)) {
+  if (/^[0-9+\-*/%().<>=!&|^~\s]+$/.test(sanitized)) {
     try {
       // eslint-disable-next-line no-new-func
       const fn = new Function(`return (${sanitized})`)
       return fn()
     } catch (err) {
-      context.warn(`No se pudo evaluar la expresión: ${trimmed}`)
+      if (resolver && resolver.warn) resolver.warn(`No se pudo evaluar la expresión: ${trimmed}`)
       return undefined
     }
   }
 
   return undefined
-}
-
-function resolveIdentifier(name, context, stack) {
-  if (!context || !context.definitions) return undefined
-  const entry = context.definitions.definitions.get(name)
-  if (!entry) return undefined
-  if (entry.cached !== undefined) return entry.cached
-  if (stack && stack.includes(name)) {
-    context.warn(`Dependencia circular al resolver ${name}`)
-    return undefined
-  }
-  const newStack = stack ? stack.slice() : []
-  newStack.push(name)
-  let value
-  if (entry.kind === 'alias' && entry.alias) {
-    value = resolveIdentifier(entry.alias, context, newStack)
-  } else if (entry.kind === 'array') {
-    value = parseArrayLiteral(entry.expr, context, newStack)
-  } else if (entry.kind === 'string') {
-    value = parseStringLiteral(entry.expr)
-  } else if (entry.kind === 'number') {
-    value = resolveValue(entry.expr, context, newStack)
-  } else if (entry.expr) {
-    value = resolveValue(entry.expr, context, newStack)
-  }
-  if (value !== undefined) entry.cached = value
-  return value
 }
 
 function parseStringLiteral(lit) {
@@ -565,12 +652,13 @@ function parseStringLiteral(lit) {
   return str
 }
 
-function parseArrayLiteral(expr, context, stack) {
+function parseArrayLiteral(expr, resolver, context) {
   const content = expr.slice(1, -1)
   const parts = parseArguments(content)
   const values = []
   for (const part of parts) {
-    values.push(resolveValue(part, context, stack))
+    if (!resolver) values.push(undefined)
+    else values.push(resolver.resolveValue(part, context))
   }
   return values
 }
@@ -600,8 +688,9 @@ function collectPrefixes(args) {
 }
 
 function resolveEntityName(call, context, fallback) {
+  const resolver = context && context.resolver
   for (const arg of call.args) {
-    const value = resolveValue(arg, context)
+    const value = resolver ? resolver.resolveValue(arg, 'name') : undefined
     const strings = flattenStringValues(value)
     const str = strings.find(Boolean)
     if (typeof str === 'string' && str.length) return str
@@ -613,8 +702,9 @@ function collectPathsFromArgs(call, type, context) {
   const models = new Set()
   const sounds = new Set()
   const sprites = new Set()
+  const resolver = context && context.resolver
   for (const arg of call.args) {
-    const value = resolveValue(arg, context)
+    const value = resolver ? resolver.resolveValue(arg, 'paths') : undefined
     const strings = flattenStringValues(value)
     for (const s of strings) {
       categorizeResourcePath(type, s, models, sounds, sprites)
@@ -665,12 +755,14 @@ function assignResourcesToEntities(entities, resources) {
   for (const entity of entities) delete entity._registerIndex
 }
 
-function extractStatsForEntity(call, type, context, prefixes, warn) {
+function extractStatsForEntity(call, type, context, prefixes) {
   const stats = {}
   const fields = TYPE_STAT_FIELDS[type] || []
   for (const field of fields) stats[field] = undefined
 
   const definitionEntries = context.definitions.entries
+  const resolver = context.resolver
+  const warn = context.warn
   for (const field of fields) {
     const keywords = STAT_KEYWORDS[field] || [field]
     let resolved
@@ -681,7 +773,7 @@ function extractStatsForEntity(call, type, context, prefixes, warn) {
       if (!ident) continue
       const tokens = identifierTokens(ident)
       if (tokens.some(t => keywords.includes(t))) {
-        resolved = resolveValue(arg, context)
+        resolved = resolver ? resolver.resolveValue(arg, `${type}.${field}`) : undefined
         if (resolved !== undefined) break
       }
     }
@@ -690,11 +782,22 @@ function extractStatsForEntity(call, type, context, prefixes, warn) {
       resolved = findValueInDefinitions(definitionEntries, keywords, prefixes, context)
     }
 
+    let finalValue
     if (resolved === undefined) {
-      warn(`No se pudo resolver el valor de ${field} en ${call.name} (línea ${call.line})`)
+      const fallback = getDefaultStatValue(type, field)
+      if (fallback !== undefined) {
+        if (warn) warn(`No se pudo resolver el valor de ${field} en ${call.name} (línea ${call.line}); usando valor por defecto ${fallback}`)
+        finalValue = fallback
+      } else {
+        if (warn) warn(`No se pudo resolver el valor de ${field} en ${call.name} (línea ${call.line})`)
+        finalValue = undefined
+      }
+    } else {
+      finalValue = toNumber(resolved)
+      if (finalValue === undefined && resolved !== undefined) finalValue = resolved
     }
 
-    stats[field] = toNumber(resolved)
+    stats[field] = finalValue
   }
   return stats
 }
@@ -703,7 +806,8 @@ function findValueInDefinitions(entries, keywords, prefixes, context) {
   const prefixList = Array.from(prefixes || [])
   const lowerPrefixes = prefixList.map(p => p.toLowerCase())
 
-  const tryResolve = (entry) => resolveIdentifier(entry.name, context)
+  const resolver = context && context.resolver
+  const tryResolve = (entry) => resolver ? resolver.resolveIdentifier(entry.name) : undefined
 
   for (const prefix of lowerPrefixes) {
     for (const keyword of keywords) {
@@ -726,6 +830,25 @@ function findValueInDefinitions(entries, keywords, prefixes, context) {
     }
   }
 
+  return undefined
+}
+
+function getDefaultStatValue(type, field) {
+  if (!type) return undefined
+  const direct = DEFAULT_VALUES[type]
+  if (direct && Object.prototype.hasOwnProperty.call(direct, field)) {
+    return direct[field]
+  }
+  if (typeof type === 'string') {
+    if (type.includes('zombie')) {
+      const base = DEFAULT_VALUES.zombie_class
+      if (base && Object.prototype.hasOwnProperty.call(base, field)) return base[field]
+    }
+    if (type.includes('human')) {
+      const base = DEFAULT_VALUES.human_class
+      if (base && Object.prototype.hasOwnProperty.call(base, field)) return base[field]
+    }
+  }
   return undefined
 }
 

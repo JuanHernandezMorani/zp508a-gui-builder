@@ -107,14 +107,29 @@ function mapTypeDir(t) {
   }
 }
 
+const STAT_DEFAULTS = {
+  zombie: { health: 2000, speed: 250, gravity: 1.0, knockback: 1.0 },
+  human: { health: 100, speed: 240, gravity: 1.0, armor: 0 }
+}
+
 function emptyStatsForType(type) {
   switch (type) {
     case 'zombie_class':
     case 'zombie_special':
-      return { health: undefined, speed: undefined, gravity: undefined, knockback: undefined }
+      return {
+        health: STAT_DEFAULTS.zombie.health,
+        speed: STAT_DEFAULTS.zombie.speed,
+        gravity: STAT_DEFAULTS.zombie.gravity,
+        knockback: STAT_DEFAULTS.zombie.knockback
+      }
     case 'human_class':
     case 'human_special':
-      return { health: undefined, speed: undefined, gravity: undefined, armor: undefined }
+      return {
+        health: STAT_DEFAULTS.human.health,
+        speed: STAT_DEFAULTS.human.speed,
+        gravity: STAT_DEFAULTS.human.gravity,
+        armor: STAT_DEFAULTS.human.armor
+      }
     case 'weapon':
       return { damage: undefined, clip_capacity: undefined, fire_rate: undefined, reload_time: undefined, cost: undefined }
     case 'shop_item':

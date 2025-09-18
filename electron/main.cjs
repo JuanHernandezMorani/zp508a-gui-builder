@@ -392,8 +392,27 @@ ipcMain.handle('scan:sma', async () => {
   }
 
   const db = readDB()
-  const names = new Set(db.items.map(it => it.name + '|' + it.type))
-  for (const it of scanned) if (!names.has(it.name + '|' + it.type)) db.items.push(it)
+
+  // 1) Limpieza suave: quita duplicados existentes por la misma clave (por si ya había ruido previo)
+  const byKey = new Map()
+  for (const it of db.items) {
+    const k = `${it.type}|${(it.name||'').toLowerCase()}|${(it.fileName||'').toLowerCase()}`
+    if (!byKey.has(k)) byKey.set(k, it) // conserva el primero (y su "enabled")
+  }
+  db.items = Array.from(byKey.values())
+
+  // 2) Merge: si la entidad ya existe, conserva "enabled" anterior
+  for (const it of scanned) {
+    const k = `${it.type}|${(it.name||'').toLowerCase()}|${(it.fileName||'').toLowerCase()}`
+    if (byKey.has(k)) {
+      const prev = byKey.get(k)
+      it.enabled = prev.enabled // preserva estado
+    }
+    byKey.set(k, it)
+  }
+
+  // 3) Persistir
+  db.items = Array.from(byKey.values())
   writeDB(db)
   return db.items
 })

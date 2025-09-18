@@ -58,18 +58,23 @@ const RESOURCE_EXTENSIONS = {
 const CLASS_TYPES = new Set(['zombie_class', 'human_class', 'zombie_special', 'human_special'])
 
 const DEFAULT_VALUES = {
-  human_class: {
-    health: 100,
-    speed: 240,
-    gravity: 1.0,
-    armor: 0
-  },
-  zombie_class: {
-    health: 2000,
-    speed: 250,
-    gravity: 1.0,
-    knockback: 1.0
-  }
+  human_class: { health: 100, speed: 240, gravity: 1.0, armor: 0 },
+  human_special: { health: 100, speed: 240, gravity: 1.0, armor: 0 },
+  zombie_class: { health: 2000, speed: 250, gravity: 1.0, knockback: 1.0 },
+  zombie_special: { health: 2000, speed: 250, gravity: 1.0, knockback: 1.0 },
+  weapon: { damage: 0, clip_capacity: 0, fire_rate: 0, reload_time: 0, cost: 0 },
+  shop_item: { cost: 0, team: 0, unlimited: 0 }
+}
+
+const HARDCODED_CONSTANTS = {
+  humanclass1_name: 'Classic Human',
+  humanclass2_name: 'Raptor',
+  zombieclass1_name: 'Classic Zombie',
+  zombieclass2_name: 'Raptor Zombie',
+  zombieclass3_name: 'Light Zombie',
+  zombieclass4_name: 'Fat Zombie',
+  zombieclass6_name: 'Rage Zombie'
+  // Extensible: agregar más si fuese necesario según el pack de ZP 5.0.8a
 }
 
 class ValueResolver {
@@ -78,6 +83,7 @@ class ValueResolver {
     this.warn = typeof warn === 'function' ? warn : () => {}
     this.variables = new Map()
     this.resolutionStack = new Set()
+    this.warnedCircular = new Set()
   }
 
   setVariable(name, value) {
@@ -87,11 +93,10 @@ class ValueResolver {
 
   detectCircularDependency(variableName) {
     if (this.resolutionStack.has(variableName)) {
-      const error = new Error(`Dependencia circular detectada: ${variableName}`)
-      error.code = 'CIRCULAR_DEPENDENCY'
-      throw error
+      return true
     }
     this.resolutionStack.add(variableName)
+    return false
   }
 
   resolveValue(expression, context = 'global') {
@@ -99,11 +104,21 @@ class ValueResolver {
     const trimmed = typeof expression === 'string' ? expression.trim() : expression
     if (trimmed === '') return undefined
     if (typeof trimmed !== 'string') return trimmed
+    if (/^[A-Za-z_]\w*$/.test(trimmed)) {
+      if (this.variables.has(trimmed)) return this.variables.get(trimmed)
+      const container = this.definitionContainer
+      const map = container && container.definitions
+      const hasDefinition = map ? map.has(trimmed) : false
+      if (!hasDefinition && HARDCODED_CONSTANTS[trimmed] !== undefined) {
+        return HARDCODED_CONSTANTS[trimmed]
+      }
+    }
     return parseExpression(trimmed, this, context)
   }
 
   resolveIdentifier(name, context = 'global') {
     if (!name) return undefined
+    if (HARDCODED_CONSTANTS[name] !== undefined) return HARDCODED_CONSTANTS[name]
     if (this.variables.has(name)) return this.variables.get(name)
     const container = this.definitionContainer
     const map = container && container.definitions
@@ -112,14 +127,14 @@ class ValueResolver {
     if (!entry) return undefined
     if (entry.cached !== undefined) return entry.cached
 
-    try {
-      this.detectCircularDependency(name)
-    } catch (err) {
-      if (err.code === 'CIRCULAR_DEPENDENCY') {
-        this.warn(err.message)
-        return undefined
+    const isCircular = this.detectCircularDependency(name)
+    if (isCircular) {
+      const fileKey = `${(container && container.filePath) || 'unknown'}|${name}`
+      if (!this.warnedCircular.has(fileKey)) {
+        this.warn(`Dependencia circular detectada: ${name}`)
+        this.warnedCircular.add(fileKey)
       }
-      throw err
+      return undefined
     }
 
     let value
@@ -154,6 +169,7 @@ function parseSMAFile(filePath, rawText) {
 
   const commentless = stripComments(rawText)
   const definitions = collectDefinitions(rawText, commentless, warn)
+  definitions.filePath = filePath
   const resolver = new ValueResolver(definitions, warn)
   const context = { definitions, warn, resolver }
   const resources = collectResources(rawText, commentless, context)
@@ -690,6 +706,12 @@ function collectPrefixes(args) {
 function resolveEntityName(call, context, fallback) {
   const resolver = context && context.resolver
   for (const arg of call.args) {
+    const ident = extractIdentifier(arg)
+    if (ident && HARDCODED_CONSTANTS[ident] !== undefined) {
+      return HARDCODED_CONSTANTS[ident]
+    }
+  }
+  for (const arg of call.args) {
     const value = resolver ? resolver.resolveValue(arg, 'name') : undefined
     const strings = flattenStringValues(value)
     const str = strings.find(Boolean)
@@ -782,22 +804,15 @@ function extractStatsForEntity(call, type, context, prefixes) {
       resolved = findValueInDefinitions(definitionEntries, keywords, prefixes, context)
     }
 
-    let finalValue
     if (resolved === undefined) {
-      const fallback = getDefaultStatValue(type, field)
-      if (fallback !== undefined) {
-        if (warn) warn(`No se pudo resolver el valor de ${field} en ${call.name} (línea ${call.line}); usando valor por defecto ${fallback}`)
-        finalValue = fallback
-      } else {
-        if (warn) warn(`No se pudo resolver el valor de ${field} en ${call.name} (línea ${call.line})`)
-        finalValue = undefined
+      const hasDefault = DEFAULT_VALUES[type] && DEFAULT_VALUES[type][field] !== undefined
+      if (!hasDefault && warn) {
+        warn(`No se pudo resolver el valor de ${field} en ${call.name} (línea ${call.line})`)
       }
-    } else {
-      finalValue = toNumber(resolved)
-      if (finalValue === undefined && resolved !== undefined) finalValue = resolved
     }
 
-    stats[field] = finalValue
+    const numeric = toNumber(resolved)
+    stats[field] = numeric ?? DEFAULT_VALUES[type]?.[field] ?? undefined
   }
   return stats
 }
@@ -830,25 +845,6 @@ function findValueInDefinitions(entries, keywords, prefixes, context) {
     }
   }
 
-  return undefined
-}
-
-function getDefaultStatValue(type, field) {
-  if (!type) return undefined
-  const direct = DEFAULT_VALUES[type]
-  if (direct && Object.prototype.hasOwnProperty.call(direct, field)) {
-    return direct[field]
-  }
-  if (typeof type === 'string') {
-    if (type.includes('zombie')) {
-      const base = DEFAULT_VALUES.zombie_class
-      if (base && Object.prototype.hasOwnProperty.call(base, field)) return base[field]
-    }
-    if (type.includes('human')) {
-      const base = DEFAULT_VALUES.human_class
-      if (base && Object.prototype.hasOwnProperty.call(base, field)) return base[field]
-    }
-  }
   return undefined
 }
 

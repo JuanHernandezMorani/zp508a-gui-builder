@@ -1,17 +1,30 @@
 const path = require('path')
 const crypto = require('crypto')
 
-const REGISTER_FUNCTIONS = [
-  'zp_class_zombie_register',
-  'zp_register_zombie_class',
-  'zp_class_human_register',
-  'zp_register_human_class',
-  'zp_register_zombie_special_class',
-  'zp_register_human_special_class',
-  'zp_weapon_register',
-  'zp_register_extra_item',
-  'zp_register_gamemode'
-]
+const VERSION_INFO = {
+  zp_5_0_8a: { label: 'Zombie Plague 5.0.8a' },
+  zp_4_3: { label: 'Zombie Plague 4.3' },
+  external_addon: { label: 'Addon externo' },
+  mixed: { label: 'Sintaxis combinada' },
+  unknown: { label: 'Versión desconocida' }
+}
+
+const REGISTER_FUNCTION_MAPPINGS = {
+  'zp_class_zombie_register': { normalized: 'zp_class_zombie_register', type: 'zombie_class', origin: 'zp_5_0_8a' },
+  'zp_register_zombie_class': { normalized: 'zp_class_zombie_register', type: 'zombie_class', origin: 'zp_5_0_8a' },
+  'zp_register_class_zombie': { normalized: 'zp_class_zombie_register', type: 'zombie_class', origin: 'zp_4_3', legacy: true },
+  'zp_class_human_register': { normalized: 'zp_class_human_register', type: 'human_class', origin: 'zp_5_0_8a' },
+  'zp_register_human_class': { normalized: 'zp_class_human_register', type: 'human_class', origin: 'zp_5_0_8a' },
+  'zp_register_class_human': { normalized: 'zp_class_human_register', type: 'human_class', origin: 'zp_4_3', legacy: true },
+  'zp_register_zombie_special_class': { normalized: 'zp_register_zombie_special_class', type: 'zombie_special', origin: 'zp_5_0_8a' },
+  'zp_register_human_special_class': { normalized: 'zp_register_human_special_class', type: 'human_special', origin: 'zp_5_0_8a' },
+  'zp_register_extra_item': { normalized: 'zp_register_extra_item', type: 'shop_item', origin: 'zp_5_0_8a' },
+  'zp_weapon_register': { normalized: 'zp_weapon_register', type: 'weapon', origin: 'zp_5_0_8a' },
+  'zp_register_gamemode': { normalized: 'zp_register_gamemode', type: 'mode', origin: 'zp_5_0_8a' }
+}
+
+const REGISTER_FUNCTIONS = Object.keys(REGISTER_FUNCTION_MAPPINGS)
+const REGISTER_FUNCTION_SET = new Set(REGISTER_FUNCTIONS.map(name => name.toLowerCase()))
 
 const SUPPLEMENTAL_FUNCTIONS = [
   'zp_class_zombie_register_kb',
@@ -21,16 +34,6 @@ const SUPPLEMENTAL_FUNCTIONS = [
 
 const ESCAPE_REGEX = /[-/\\^$*+?.()|[\]{}]/g
 function esc(s){ return s.replace(ESCAPE_REGEX, '\\$&') }
-
-const REGISTER_TYPE_RESOLVERS = [
-  { match: name => name.toLowerCase() === 'zp_class_zombie_register' || name.toLowerCase() === 'zp_register_zombie_class', type: 'zombie_class' },
-  { match: name => name.toLowerCase() === 'zp_class_human_register'  || name.toLowerCase() === 'zp_register_human_class',  type: 'human_class' },
-  { match: name => name.toLowerCase() === 'zp_register_zombie_special_class', type: 'zombie_special' },
-  { match: name => name.toLowerCase() === 'zp_register_human_special_class', type: 'human_special' },
-  { match: name => name.toLowerCase() === 'zp_weapon_register', type: 'weapon' },
-  { match: name => name.toLowerCase() === 'zp_register_extra_item', type: 'shop_item' },
-  { match: name => name.toLowerCase() === 'zp_register_gamemode', type: 'mode' }
-]
 
 const TYPE_STAT_FIELDS = {
   zombie_class: ['health', 'speed', 'gravity', 'knockback'],
@@ -222,6 +225,9 @@ function parseSMAEntities(filePath, rawText) {
 
   const resources = collectResources(rawText, commentless, context)
   const registerCalls = findRegisterCalls(rawText)
+  const versionInfo = detectSmaVersion(filePath, rawText, registerCalls)
+  detectUnsupportedRegisterFunctions(rawText, registerCalls, warn)
+  const transformationSummary = new Set()
 
   const fileBase = path.basename(filePath, '.sma')
   const originFile = computeOriginFile(filePath)
@@ -230,8 +236,21 @@ function parseSMAEntities(filePath, rawText) {
 
   for (const call of registerCalls) {
     const lowerName = call.name.toLowerCase()
-    const config = REGISTER_TYPE_RESOLVERS.find(r => r.match(lowerName))
-    if (!config) continue
+    const mapping = REGISTER_FUNCTION_MAPPINGS[lowerName]
+    if (!mapping) continue
+
+    const normalizedFunction = mapping.normalized
+    const callTransformations = new Set()
+    let transformationMessage = null
+    if (mapping.legacy) {
+      transformationMessage = `Sintaxis ${call.name} migrada a ${normalizedFunction} (línea ${call.line})`
+    } else if (normalizedFunction && normalizedFunction !== call.name) {
+      transformationMessage = `Función ${call.name} → ${normalizedFunction} (línea ${call.line})`
+    }
+    if (transformationMessage) {
+      callTransformations.add(transformationMessage)
+      transformationSummary.add(transformationMessage)
+    }
 
     const prefixes = collectPrefixes(call.args)
     call._prefixes = prefixes
@@ -243,13 +262,13 @@ function parseSMAEntities(filePath, rawText) {
     const rawName = nameInfo.value || call.assignedVar || fileBase
     const cleanName = typeof rawName === 'string' ? rawName.trim() : String(rawName || '')
     const normalizedName = normalizeName(cleanName)
-    const stats = extractStatsForEntity(call, config.type, context, prefixes)
-    const initialPaths = collectPathsFromArgs(call, config.type, context)
-    const pathSets = createPathSets(config.type, initialPaths)
+    const stats = extractStatsForEntity(call, mapping.type, context, prefixes)
+    const initialPaths = collectPathsFromArgs(call, mapping.type, context)
+    const pathSets = createPathSets(mapping.type, initialPaths)
 
     const entity = {
       id: '',
-      type: config.type,
+      type: mapping.type,
       name: cleanName,
       fileName: fileBase,
       enabled: true,
@@ -258,11 +277,18 @@ function parseSMAEntities(filePath, rawText) {
       paths: { models: [], sounds: [], sprites: [] },
       meta: {
         originFile,
+        originVersion: versionInfo.version,
+        originLabel: versionInfo.label,
+        originIsAddon: Boolean(versionInfo.isAddon),
+        originBaseVersion: versionInfo.baseVersion,
+        migrated: versionInfo.version !== 'zp_5_0_8a',
         registerLine: call.line,
         registerFunction: call.name,
+        registerFunctionNormalized: normalizedFunction,
         registerVar: call.assignedVar || undefined,
         displayNameToken: nameInfo.token || undefined,
         warnings: callWarnings,
+        transformations: Array.from(callTransformations),
         conflicts: [],
         bundle: fileBase,
         normalizedName,
@@ -319,11 +345,24 @@ function parseSMAEntities(filePath, rawText) {
     const warningSet = ensureWarningSet(entity.meta.warnings)
     for (const msg of globalWarningArray) warningSet.add(msg)
     entity.meta.warnings = Array.from(warningSet)
+    const transformationSet = ensureStringSet(entity.meta.transformations)
+    entity.meta.transformations = Array.from(transformationSet)
+    for (const message of transformationSet) transformationSummary.add(message)
     if (!Array.isArray(entity.meta.conflicts)) entity.meta.conflicts = []
     const normalizedName = entity.meta.normalizedName || normalizeName(entity.name)
     entity.meta.normalizedName = normalizedName
     entity.id = buildDeterministicId(entity.meta.originFile, entity.type, normalizedName)
     finalizeEntityPaths(entity)
+  }
+
+  if ((versionInfo.version && versionInfo.version !== 'zp_5_0_8a') || versionInfo.isAddon) {
+    console.info(`[SMA Parser] ${path.basename(filePath)} origen detectado: ${versionInfo.label}`)
+  }
+  if (transformationSummary.size) {
+    console.info(`[SMA Parser] ${path.basename(filePath)} transformaciones:`)
+    for (const message of transformationSummary) {
+      console.info(`  - ${message}`)
+    }
   }
 
   if (fileWarnings.size) {
@@ -338,6 +377,18 @@ function parseSMAEntities(filePath, rawText) {
 
 function ensureWarningSet(value) {
   if (value instanceof Set) return value
+  return ensureStringSet(value)
+}
+
+function ensureStringSet(value) {
+  if (value instanceof Set) {
+    const cloned = new Set()
+    for (const entry of value) {
+      if (!entry) continue
+      cloned.add(String(entry))
+    }
+    return cloned
+  }
   const set = new Set()
   if (Array.isArray(value)) {
     for (const entry of value) {
@@ -348,6 +399,78 @@ function ensureWarningSet(value) {
     set.add(String(value))
   }
   return set
+}
+
+function detectSmaVersion(filePath, rawText, registerCalls) {
+  const textLower = typeof rawText === 'string' ? rawText.toLowerCase() : ''
+  const fileLower = (filePath ? path.basename(filePath) : '').toLowerCase()
+  const looksAddon = /zp_zclass_|zp_hclass_|zp_zombieclass_|zp_zombie_class_|zp_zclass/i.test(fileLower) || /zp_zclass_/i.test(textLower)
+  let hasLegacyCall = false
+  let hasModernCall = false
+  for (const call of registerCalls || []) {
+    if (!call || !call.name) continue
+    const mapping = REGISTER_FUNCTION_MAPPINGS[call.name.toLowerCase()]
+    if (!mapping) continue
+    if (mapping.origin === 'zp_4_3') hasLegacyCall = true
+    if (mapping.origin === 'zp_5_0_8a') hasModernCall = true
+  }
+  const includesLegacy = /#include\s*<\s*zombieplague/i.test(textLower)
+  const includesModern = /#include\s*<\s*zp50_/i.test(textLower)
+
+  let baseVersion = 'unknown'
+  if (hasLegacyCall || includesLegacy) baseVersion = 'zp_4_3'
+  else if (hasModernCall || includesModern) baseVersion = 'zp_5_0_8a'
+
+  let version = baseVersion
+  if (looksAddon) {
+    version = 'external_addon'
+  } else if ((hasLegacyCall || includesLegacy) && (hasModernCall || includesModern)) {
+    version = 'mixed'
+  } else if (version === 'unknown') {
+    version = hasModernCall || includesModern ? 'zp_5_0_8a' : (hasLegacyCall || includesLegacy ? 'zp_4_3' : 'unknown')
+  }
+
+  const info = VERSION_INFO[version] || VERSION_INFO.unknown
+  let label = info.label
+
+  if (version === 'external_addon') {
+    const baseLabel = VERSION_INFO[baseVersion]?.label || VERSION_INFO.unknown.label
+    label = baseVersion !== 'unknown' ? `${info.label} (${baseLabel})` : info.label
+  } else if (version === 'mixed') {
+    label = `${info.label} (ZP 4.3 + ZP 5.0.8a)`
+  } else if (version === 'unknown' && baseVersion !== 'unknown') {
+    label = VERSION_INFO[baseVersion]?.label || label
+  }
+
+  if (version === 'unknown') {
+    version = 'zp_5_0_8a'
+    label = VERSION_INFO[version].label
+  }
+
+  const effectiveBase = baseVersion === 'unknown' ? version : baseVersion
+
+  return {
+    version,
+    baseVersion: effectiveBase,
+    label,
+    isAddon: looksAddon,
+    hasLegacy: hasLegacyCall || includesLegacy,
+    hasModern: hasModernCall || includesModern
+  }
+}
+
+function detectUnsupportedRegisterFunctions(rawText, registerCalls, warn) {
+  if (typeof rawText !== 'string') return
+  const seen = new Set()
+  const recognized = new Set((registerCalls || []).map(c => (c && c.name ? c.name.toLowerCase() : '')))
+  const regex = /\bzp_register_(?:class|zombie|human)[A-Za-z0-9_]*/gi
+  let match
+  while ((match = regex.exec(rawText)) !== null) {
+    const lower = match[0].toLowerCase()
+    if (REGISTER_FUNCTION_SET.has(lower) || recognized.has(lower) || seen.has(lower)) continue
+    warn(`Función de registro no soportada detectada: ${match[0]}`)
+    seen.add(lower)
+  }
 }
 
 function computeOriginFile(filePath) {

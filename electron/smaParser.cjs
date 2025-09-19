@@ -75,11 +75,15 @@ const RESOURCE_EXTENSIONS = {
 
 const CLASS_TYPES = new Set(['zombie_class', 'human_class', 'zombie_special', 'human_special'])
 
-const DEFAULT_VALUES = {
+const ZP508a_DEFAULTS = Object.freeze({
   human_class: { health: 100, speed: 240, gravity: 1.0, armor: 0 },
   human_special: { health: 100, speed: 240, gravity: 1.0, armor: 0 },
   zombie_class: { health: 2000, speed: 250, gravity: 1.0, knockback: 1.0 },
-  zombie_special: { health: 2000, speed: 250, gravity: 1.0, knockback: 1.0 },
+  zombie_special: { health: 2000, speed: 250, gravity: 1.0, knockback: 1.0 }
+})
+
+const DEFAULT_VALUES = {
+  ...ZP508a_DEFAULTS,
   weapon: { damage: 0, clip_capacity: 0, fire_rate: 0, reload_time: 0, cost: 0 },
   shop_item: { cost: 0, team: 0, unlimited: 0 },
   mode: {}
@@ -262,7 +266,7 @@ function parseSMAEntities(filePath, rawText) {
     const rawName = nameInfo.value || call.assignedVar || fileBase
     const cleanName = typeof rawName === 'string' ? rawName.trim() : String(rawName || '')
     const normalizedName = normalizeName(cleanName)
-    const stats = extractStatsForEntity(call, mapping.type, context, prefixes)
+    const { stats, defaultsApplied } = extractStatsForEntity(call, mapping.type, context, prefixes)
     const initialPaths = collectPathsFromArgs(call, mapping.type, context)
     const pathSets = createPathSets(mapping.type, initialPaths)
 
@@ -292,12 +296,15 @@ function parseSMAEntities(filePath, rawText) {
         conflicts: [],
         bundle: fileBase,
         normalizedName,
-        supplemental: []
+        extraCalls: [],
+        defaultedFields: new Set(defaultsApplied || [])
       },
       _registerIndex: call.index,
       _prefixes: prefixes,
       _pathSets: pathSets
     }
+
+    gatherEntityLookupKeys(entity, call, context)
 
     context.currentWarnings = null
 
@@ -321,6 +328,8 @@ function parseSMAEntities(filePath, rawText) {
       })
       preferred.meta.conflicts = conflicts
 
+      mergeDefaultedFields(preferred, other)
+
       if (preferred !== existing) {
         entitiesByKey.set(key, preferred)
         const idx = orderedEntities.indexOf(existing)
@@ -337,6 +346,7 @@ function parseSMAEntities(filePath, rawText) {
 
   const supplementalCalls = findSupplementalCalls(rawText)
   applySupplementalCalls(supplementalCalls, orderedEntities, context)
+  recordDefaultApplications(orderedEntities)
 
   assignResourcesToEntities(orderedEntities, resources)
 
@@ -691,16 +701,22 @@ function applySupplementalCalls(calls, entities, context) {
   const warn = context && typeof context.warn === 'function' ? context.warn : () => {}
   const registryByVar = new Map()
   const registryByName = new Map()
-  const registryByToken = new Map()
+  const registryByKey = new Map()
 
   for (const entity of entities) {
     if (!entity || !entity.meta) continue
     const varName = entity.meta.registerVar
     if (varName) registryByVar.set(varName.toLowerCase(), entity)
     const normalizedName = entity.meta.normalizedName || normalizeName(entity.name)
-    if (normalizedName) registryByName.set(normalizedName, entity)
-    const token = entity.meta.displayNameToken
-    if (token) registryByToken.set(token.toLowerCase(), entity)
+    if (normalizedName) registryByName.set(normalizedName.toLowerCase(), entity)
+    const keys = Array.isArray(entity.meta.lookupKeys) ? entity.meta.lookupKeys : []
+    for (const key of keys) {
+      if (!key) continue
+      const lower = key.toLowerCase()
+      if (!registryByKey.has(lower)) registryByKey.set(lower, [])
+      const list = registryByKey.get(lower)
+      if (!list.includes(entity)) list.push(entity)
+    }
   }
 
   for (const call of calls) {
@@ -709,62 +725,105 @@ function applySupplementalCalls(calls, entities, context) {
 
     const firstArg = call.args[0]
     const ident = extractIdentifier(firstArg)
+    const candidateKeys = []
+    const seenCandidates = new Set()
+    const addCandidate = (value) => {
+      const normalized = normalizeLookupKey(value)
+      if (normalized && !seenCandidates.has(normalized)) {
+        candidateKeys.push(normalized)
+        seenCandidates.add(normalized)
+      }
+      const normalizedName = normalizeLookupName(value)
+      if (normalizedName && !seenCandidates.has(normalizedName)) {
+        candidateKeys.push(normalizedName)
+        seenCandidates.add(normalizedName)
+      }
+    }
+
+    if (ident) addCandidate(ident)
+    if (firstArg !== undefined) addCandidate(firstArg)
+    if (resolver && firstArg !== undefined) {
+      const resolved = resolver.resolveValue(firstArg, 'supplemental.lookup')
+      const resolvedCandidates = flattenStringValues(resolved)
+      for (const candidate of resolvedCandidates) addCandidate(candidate)
+    }
+
     let entity = null
 
     if (ident) {
       const lowerIdent = ident.toLowerCase()
       if (registryByVar.has(lowerIdent)) entity = registryByVar.get(lowerIdent)
-      if (!entity && registryByToken.has(lowerIdent)) entity = registryByToken.get(lowerIdent)
     }
 
-    if (!entity && resolver && firstArg !== undefined) {
-      const resolved = resolver.resolveValue(firstArg, 'supplemental.lookup')
-      const resolvedCandidates = flattenStringValues(resolved)
-      for (const candidate of resolvedCandidates) {
-        const normalized = normalizeName(candidate)
-        if (normalized && registryByName.has(normalized)) {
-          entity = registryByName.get(normalized)
+    if (!entity) {
+      for (const key of candidateKeys) {
+        const matches = registryByKey.get(key)
+        if (matches && matches.length) {
+          entity = matches[0]
           break
         }
       }
     }
 
-    if (!entity && ident) {
-      const normalizedIdent = normalizeName(ident)
-      if (normalizedIdent && registryByName.has(normalizedIdent)) {
-        entity = registryByName.get(normalizedIdent)
+    if (!entity) {
+      for (const key of candidateKeys) {
+        if (registryByName.has(key)) {
+          entity = registryByName.get(key)
+          break
+        }
       }
     }
 
     if (!entity) {
       const lineInfo = call.line !== undefined ? call.line : '?'
-      warn(`No se encontró entidad base para ${call.name} (línea ${lineInfo})`)
+      const warningMessage = `No se encontró entidad base para ${call.name} en línea ${lineInfo}.`
+      warn(warningMessage)
+      logSupplementalWarning(warningMessage)
       continue
     }
 
+    if (!entity.stats) entity.stats = {}
     const warningSet = ensureWarningSet(entity.meta.warnings)
     entity.meta.warnings = warningSet
     context.currentWarnings = warningSet
 
-    if (!Array.isArray(entity.meta.supplemental)) entity.meta.supplemental = []
-    const record = { function: call.name, params: {} }
+    if (!Array.isArray(entity.meta.extraCalls)) entity.meta.extraCalls = []
+    const record = { name: call.name, params: {} }
 
     if (handler.kind === 'stat') {
       const expr = call.args[1]
-      const resolved = expr && resolver ? resolver.resolveValue(expr, `${entity.type}.${handler.field}`) : undefined
-      const numeric = toNumber(resolved)
+      let resolved = expr && resolver ? resolver.resolveValue(expr, `${entity.type}.${handler.field}`) : undefined
+      let numeric = toNumber(resolved)
+      if (numeric === undefined && expr !== undefined) {
+        const literal = resolveLiteralValue(expr, resolver, `${entity.type}.${handler.field}`)
+        if (literal !== undefined) {
+          resolved = literal
+          numeric = toNumber(literal)
+        }
+      }
+      let associated = false
       if (numeric === undefined) {
         warn(`No se pudo resolver ${handler.field} adicional (${call.name} línea ${call.line})`)
         const fallback = entity.stats && entity.stats[handler.field] !== undefined ? entity.stats[handler.field] : DEFAULT_VALUES[entity.type]?.[handler.field]
-        if (fallback !== undefined && entity.stats) entity.stats[handler.field] = fallback
-        record.params[handler.field] = fallback
+        if (fallback !== undefined && entity.stats) {
+          entity.stats[handler.field] = fallback
+          record.params[handler.field] = fallback
+        }
       } else {
         entity.stats[handler.field] = numeric
         record.params[handler.field] = numeric
+        associated = true
+        if (entity.meta && entity.meta.defaultedFields instanceof Set) {
+          entity.meta.defaultedFields.delete(handler.field)
+        }
+      }
+      if (associated) {
+        const displayName = formatEntityDisplayName(entity)
+        logSupplementalInfo(`Asociado ${handler.field} adicional a ${entity.type} '${displayName}'.`)
       }
     } else if (handler.kind === 'models') {
       const expr = call.args[1]
-      const addedModels = new Set()
+      const addedModels = createResourceCollector()
       if (!expr) {
         warn(`No se pudo resolver modelo adicional (${call.name} línea ${call.line})`)
       } else {
@@ -775,17 +834,64 @@ function applySupplementalCalls(calls, entities, context) {
         }
         for (const value of strings) {
           addResourceToEntity(entity, 'models', value)
-          const normalized = normalizePath(value)
-          if (normalized) addedModels.add(normalized)
+          addResourceValue(addedModels, value)
         }
       }
-      record.params.models = Array.from(addedModels)
+      record.params.models = addedModels.values.slice()
+      if (addedModels.values.length) {
+        const displayName = formatEntityDisplayName(entity)
+        logSupplementalInfo(`Asociado modelo adicional a ${entity.type} '${displayName}'.`)
+      }
     }
 
-    entity.meta.supplemental.push(record)
+    entity.meta.extraCalls.push(record)
     context.currentWarnings = null
   }
   context.currentWarnings = null
+}
+
+function recordDefaultApplications(entities) {
+  if (!Array.isArray(entities)) return
+  for (const entity of entities) {
+    if (!entity || !entity.meta) continue
+    const defaults = entity.meta.defaultedFields
+    if (!(defaults instanceof Set)) {
+      if (defaults !== undefined) delete entity.meta.defaultedFields
+      continue
+    }
+    if (defaults.size === 0) {
+      delete entity.meta.defaultedFields
+      continue
+    }
+    const fields = Array.from(defaults)
+    if (!Array.isArray(entity.meta.extraCalls)) entity.meta.extraCalls = []
+    const alreadyRecorded = entity.meta.extraCalls.some(call => call && call.name === 'zp_5_0_8a_defaults')
+    if (!alreadyRecorded) {
+      entity.meta.extraCalls.push({ name: 'zp_5_0_8a_defaults', params: { fields } })
+    }
+    delete entity.meta.defaultedFields
+  }
+}
+
+function mergeDefaultedFields(target, source) {
+  if (!target || !target.meta) return
+  if (!(target.meta.defaultedFields instanceof Set)) {
+    target.meta.defaultedFields = new Set()
+  }
+  if (!source || !source.meta || !(source.meta.defaultedFields instanceof Set)) return
+  for (const field of source.meta.defaultedFields) {
+    target.meta.defaultedFields.add(field)
+  }
+}
+
+function logSupplementalInfo(message) {
+  if (!message) return
+  console.info(message)
+}
+
+function logSupplementalWarning(message) {
+  if (!message) return
+  console.warn(message)
 }
 
 function extractCall(text, startIndex) {
@@ -982,6 +1088,24 @@ function parseExpression(expression, resolver, context) {
     if (innerResolved !== undefined) return innerResolved
   }
 
+  const newMatch = trimmed.match(/^new\s+[A-Za-z_]\w*\s*\((.*)\)$/i)
+  if (newMatch) {
+    const argsText = newMatch[1]
+    const args = parseArguments(argsText)
+    if (args.length) {
+      const firstArg = args[0]
+      if (resolver) {
+        const resolved = resolver.resolveValue(firstArg, context)
+        const numeric = toNumber(resolved)
+        if (numeric !== undefined) return numeric
+      }
+      const literal = resolveLiteralValue(firstArg, resolver, context)
+      if (literal !== undefined) return literal
+      return parseExpression(firstArg, resolver, context)
+    }
+    return undefined
+  }
+
   const numericWrapMatch = trimmed.match(/^(float|_:float)\s*\((.*)\)$/i)
   if (numericWrapMatch) {
     const inner = parseExpression(numericWrapMatch[2], resolver, context)
@@ -1101,6 +1225,73 @@ function collectPrefixes(args) {
   return prefixes
 }
 
+function normalizeLookupKey(value) {
+  if (value === undefined || value === null) return null
+  let str = String(value).trim()
+  if (!str) return null
+  if ((str.startsWith('"') && str.endsWith('"')) || (str.startsWith('\'') && str.endsWith('\''))) {
+    str = str.slice(1, -1).trim()
+    if (!str) return null
+  }
+  return str.toLowerCase()
+}
+
+function normalizeLookupName(value) {
+  if (value === undefined || value === null) return null
+  let str = String(value).trim()
+  if (!str) return null
+  if ((str.startsWith('"') && str.endsWith('"')) || (str.startsWith('\'') && str.endsWith('\''))) {
+    str = str.slice(1, -1).trim()
+    if (!str) return null
+  }
+  const normalized = normalizeName(str)
+  return normalized ? normalized.toLowerCase() : null
+}
+
+function gatherEntityLookupKeys(entity, call, context) {
+  if (!entity || !entity.meta) return
+  const keys = new Set(Array.isArray(entity.meta.lookupKeys) ? entity.meta.lookupKeys : [])
+  const pushKey = (value) => {
+    const normalized = normalizeLookupKey(value)
+    if (normalized) keys.add(normalized)
+    const normalizedName = normalizeLookupName(value)
+    if (normalizedName) keys.add(normalizedName)
+  }
+
+  pushKey(entity.meta.registerVar)
+  pushKey(entity.meta.displayNameToken)
+  pushKey(entity.meta.normalizedName || entity.name)
+  pushKey(entity.name)
+
+  const args = call && Array.isArray(call.args) ? call.args : []
+  if (args.length) {
+    const firstArg = args[0]
+    const ident = extractIdentifier(firstArg)
+    if (ident) pushKey(ident)
+    if (firstArg !== undefined) pushKey(firstArg)
+    if (context && context.resolver && firstArg !== undefined) {
+      const resolved = context.resolver.resolveValue(firstArg, 'register.identifier')
+      const values = flattenStringValues(resolved)
+      for (const value of values) pushKey(value)
+    }
+  }
+
+  entity.meta.lookupKeys = Array.from(keys)
+}
+
+function formatEntityDisplayName(entity) {
+  if (!entity) return '?'
+  if (entity.name !== undefined && entity.name !== null) {
+    const raw = String(entity.name).trim()
+    if (raw) return raw
+  }
+  const normalized = entity.meta && entity.meta.normalizedName ? String(entity.meta.normalizedName).trim() : ''
+  if (normalized) return normalized
+  const varName = entity.meta && entity.meta.registerVar ? String(entity.meta.registerVar).trim() : ''
+  if (varName) return varName
+  return '?'
+}
+
 function resolveEntityName(call, context, fallback) {
   const resolver = context && context.resolver
   for (const arg of call.args) {
@@ -1126,9 +1317,9 @@ function resolveEntityName(call, context, fallback) {
 }
 
 function collectPathsFromArgs(call, type, context) {
-  const models = new Set()
-  const sounds = new Set()
-  const sprites = new Set()
+  const models = createResourceCollector()
+  const sounds = createResourceCollector()
+  const sprites = createResourceCollector()
   const resolver = context && context.resolver
   for (const arg of call.args) {
     const value = resolver ? resolver.resolveValue(arg, 'paths') : undefined
@@ -1138,9 +1329,9 @@ function collectPathsFromArgs(call, type, context) {
     }
   }
   return {
-    models: Array.from(models),
-    sounds: Array.from(sounds),
-    sprites: Array.from(sprites)
+    models: models.values.slice(),
+    sounds: sounds.values.slice(),
+    sprites: sprites.values.slice()
   }
 }
 
@@ -1153,12 +1344,26 @@ function categorizeResourcePath(type, value, models, sounds, sprites) {
   const ext = path.extname(lower)
   if (!ext) return
   if (RESOURCE_EXTENSIONS.models.includes(ext)) {
-    models.add(normalized)
+    if (isResourceAllowedForType(type, 'models')) addResourceValue(models, normalized)
   } else if (RESOURCE_EXTENSIONS.sounds.includes(ext)) {
-    if (!CLASS_TYPES.has(type)) sounds.add(normalized)
+    if (!CLASS_TYPES.has(type) && isResourceAllowedForType(type, 'sounds')) addResourceValue(sounds, normalized)
   } else if (RESOURCE_EXTENSIONS.sprites.includes(ext)) {
-    if (!CLASS_TYPES.has(type)) sprites.add(normalized)
+    if (!CLASS_TYPES.has(type) && isResourceAllowedForType(type, 'sprites')) addResourceValue(sprites, normalized)
   }
+}
+
+function createResourceCollector() {
+  return { values: [], seen: new Set() }
+}
+
+function addResourceValue(collector, value) {
+  if (!collector) return
+  const normalized = normalizePath(value)
+  if (!normalized) return
+  const key = normalized.toLowerCase()
+  if (collector.seen.has(key)) return
+  collector.seen.add(key)
+  collector.values.push(normalized)
 }
 
 function assignResourcesToEntities(entities, resources) {
@@ -1231,28 +1436,22 @@ function isResourceAllowedForType(type, kind) {
 
 function createPathSets(type, initial) {
   const sets = {
-    models: new Set(),
-    sounds: new Set(),
-    sprites: new Set()
+    models: createResourceCollector(),
+    sounds: createResourceCollector(),
+    sprites: createResourceCollector()
   }
-  if (!initial) return sets
-  if (Array.isArray(initial.models)) {
-    for (const value of initial.models) addPathToSet(sets, type, 'models', value)
-  }
-  if (Array.isArray(initial.sounds)) {
-    for (const value of initial.sounds) addPathToSet(sets, type, 'sounds', value)
-  }
-  if (Array.isArray(initial.sprites)) {
-    for (const value of initial.sprites) addPathToSet(sets, type, 'sprites', value)
+  if (initial) {
+    if (Array.isArray(initial.models) && isResourceAllowedForType(type, 'models')) {
+      for (const value of initial.models) addResourceValue(sets.models, value)
+    }
+    if (Array.isArray(initial.sounds) && isResourceAllowedForType(type, 'sounds')) {
+      for (const value of initial.sounds) addResourceValue(sets.sounds, value)
+    }
+    if (Array.isArray(initial.sprites) && isResourceAllowedForType(type, 'sprites')) {
+      for (const value of initial.sprites) addResourceValue(sets.sprites, value)
+    }
   }
   return sets
-}
-
-function addPathToSet(sets, type, kind, value) {
-  if (!isResourceAllowedForType(type, kind)) return
-  const normalized = normalizePath(value)
-  if (!normalized) return
-  sets[kind].add(normalized)
 }
 
 function addResourceToEntity(entity, kind, value) {
@@ -1260,17 +1459,15 @@ function addResourceToEntity(entity, kind, value) {
   if (!entity._pathSets) {
     entity._pathSets = createPathSets(entity.type, entity.paths || { models: [], sounds: [], sprites: [] })
   }
-  const normalized = normalizePath(value)
-  if (!normalized) return
-  entity._pathSets[kind].add(normalized)
+  addResourceValue(entity._pathSets[kind], value)
 }
 
 function finalizeEntityPaths(entity) {
   const sets = entity._pathSets || createPathSets(entity.type, entity.paths)
   const paths = { models: [], sounds: [], sprites: [] }
-  if (isResourceAllowedForType(entity.type, 'models')) paths.models = Array.from(sets.models)
-  if (isResourceAllowedForType(entity.type, 'sounds')) paths.sounds = Array.from(sets.sounds)
-  if (isResourceAllowedForType(entity.type, 'sprites')) paths.sprites = Array.from(sets.sprites)
+  if (isResourceAllowedForType(entity.type, 'models')) paths.models = sets.models.values.slice()
+  if (isResourceAllowedForType(entity.type, 'sounds')) paths.sounds = sets.sounds.values.slice()
+  if (isResourceAllowedForType(entity.type, 'sprites')) paths.sprites = sets.sprites.values.slice()
   entity.paths = paths
   delete entity._pathSets
 }
@@ -1289,12 +1486,13 @@ function scoreEntity(entity) {
     if (value !== undefined && value !== null) score += 1
   }
   const sets = entity._pathSets || createPathSets(entity.type, entity.paths)
-  score += sets.models.size + sets.sounds.size + sets.sprites.size
+  score += sets.models.values.length + sets.sounds.values.length + sets.sprites.values.length
   return score
 }
 
 function extractStatsForEntity(call, type, context, prefixes) {
   const stats = {}
+  const defaultsApplied = new Set()
   const fields = TYPE_STAT_FIELDS[type] || []
   for (const field of fields) stats[field] = undefined
 
@@ -1304,14 +1502,21 @@ function extractStatsForEntity(call, type, context, prefixes) {
   const warn = context.warn
   for (const field of fields) {
     const keywords = STAT_KEYWORDS[field] || [field]
+    const contextKey = `${type}.${field}`
     let resolved
+    let positionalArgValue
 
     const positionIndex = positional[field]
     if (positionIndex !== undefined) {
-      const positionalArg = call.args[positionIndex]
-      if (positionalArg !== undefined) {
-        resolved = resolver ? resolver.resolveValue(positionalArg, `${type}.${field}`) : positionalArg
+      positionalArgValue = call.args[positionIndex]
+      if (positionalArgValue !== undefined) {
+        resolved = resolver ? resolver.resolveValue(positionalArgValue, contextKey) : positionalArgValue
       }
+    }
+
+    if (resolved === undefined && positionalArgValue !== undefined) {
+      const literal = resolveLiteralValue(positionalArgValue, resolver, contextKey)
+      if (literal !== undefined) resolved = literal
     }
 
     // Search within call arguments first
@@ -1321,7 +1526,11 @@ function extractStatsForEntity(call, type, context, prefixes) {
         if (!ident) continue
         const tokens = identifierTokens(ident)
         if (tokens.some(t => keywords.includes(t))) {
-          resolved = resolver ? resolver.resolveValue(arg, `${type}.${field}`) : undefined
+          resolved = resolver ? resolver.resolveValue(arg, contextKey) : undefined
+          if (resolved === undefined) {
+            const literal = resolveLiteralValue(arg, resolver, contextKey)
+            if (literal !== undefined) resolved = literal
+          }
           if (resolved !== undefined) break
         }
       }
@@ -1338,10 +1547,20 @@ function extractStatsForEntity(call, type, context, prefixes) {
       }
     }
 
-    const numeric = toNumber(resolved)
-    stats[field] = numeric ?? DEFAULT_VALUES[type]?.[field] ?? undefined
+    let numeric = toNumber(resolved)
+    if (numeric === undefined && resolved !== undefined && typeof resolved === 'string') {
+      const literal = resolveLiteralValue(resolved, resolver, contextKey)
+      numeric = toNumber(literal)
+    }
+
+    if (numeric === undefined && DEFAULT_VALUES[type] && DEFAULT_VALUES[type][field] !== undefined) {
+      numeric = DEFAULT_VALUES[type][field]
+      defaultsApplied.add(field)
+    }
+
+    stats[field] = numeric
   }
-  return stats
+  return { stats, defaultsApplied: Array.from(defaultsApplied) }
 }
 
 function findValueInDefinitions(entries, keywords, prefixes, context) {
@@ -1389,6 +1608,74 @@ function toNumber(value) {
     const num = Number(value)
     return Number.isNaN(num) ? undefined : num
   }
+  return undefined
+}
+
+function resolveLiteralValue(expr, resolver, context) {
+  if (expr === undefined || expr === null) return undefined
+  if (typeof expr !== 'string') return toNumber(expr)
+  let trimmed = expr.trim()
+  if (!trimmed) return undefined
+
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith('\'') && trimmed.endsWith('\''))) {
+    return undefined
+  }
+
+  if (resolver) {
+    const resolved = resolver.resolveValue(trimmed, context)
+    const numericResolved = toNumber(resolved)
+    if (numericResolved !== undefined) return numericResolved
+    if (typeof resolved === 'string' && resolved !== trimmed) {
+      const nested = resolveLiteralValue(resolved, resolver, context)
+      if (nested !== undefined) return nested
+    }
+  }
+
+  const newMatch = trimmed.match(/^new\s+[A-Za-z_]\w*\s*\((.*)\)$/i)
+  if (newMatch) {
+    const args = parseArguments(newMatch[1])
+    if (args.length) {
+      const firstArg = args[0]
+      if (resolver) {
+        const resolved = resolver.resolveValue(firstArg, context)
+        const numeric = toNumber(resolved)
+        if (numeric !== undefined) return numeric
+      }
+      return resolveLiteralValue(firstArg, resolver, context)
+    }
+  }
+
+  trimmed = trimmed.replace(/\b(?:new|const|stock|static)\b/gi, ' ')
+  trimmed = trimmed.replace(/\b(?:Float|float|_:float|_:Float|bool|Bool|_:bool|_:Bool|char|Char|_:char|_:Char|Handle)\s*:/g, ' ')
+  trimmed = trimmed.replace(/;+$/g, '').trim()
+  if (!trimmed) return undefined
+
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith('\'') && trimmed.endsWith('\''))) {
+    return undefined
+  }
+
+  if (/^[-+]?0x[0-9a-f]+$/i.test(trimmed)) return parseInt(trimmed, 16)
+  if (/^[-+]?\d+\.\d+(?:e[-+]?\d+)?$/i.test(trimmed)) return parseFloat(trimmed)
+  if (/^[-+]?\d+$/.test(trimmed)) return parseInt(trimmed, 10)
+
+  if (/^[A-Za-z_]\w*$/.test(trimmed) && resolver) {
+    const resolved = resolver.resolveValue(trimmed, context)
+    const numeric = toNumber(resolved)
+    if (numeric !== undefined) return numeric
+  }
+
+  if (/^[0-9+\-*/%().<>=!&|^~\s]+$/.test(trimmed)) {
+    try {
+      // eslint-disable-next-line no-new-func
+      const fn = new Function(`return (${trimmed})`)
+      const result = fn()
+      const numeric = toNumber(result)
+      if (numeric !== undefined) return numeric
+    } catch (err) {
+      return undefined
+    }
+  }
+
   return undefined
 }
 

@@ -1,0 +1,733 @@
+{
+  "items": [
+    {
+      "id": "c7f377bf0c5a9f8c38be4bfb9b00efb62cef585d",
+      "type": "human_class",
+      "name": "Classic Human",
+      "fileName": "zp50_class_human_classic",
+      "enabled": true,
+      "source": "scan",
+      "stats": {
+        "health": 100,
+        "speed": 240,
+        "gravity": 1,
+        "armor": 0
+      },
+      "paths": {
+        "models": [],
+        "sounds": [],
+        "sprites": []
+      },
+      "meta": {
+        "originFile": "NewZombie/cstrike/addons/amxmodx/scripting/zp50/zp50_class_human_classic.sma",
+        "originVersion": "zp_5_0_8a",
+        "originLabel": "Zombie Plague 5.0.8a",
+        "originIsAddon": false,
+        "originBaseVersion": "zp_5_0_8a",
+        "migrated": false,
+        "registerLine": 29,
+        "registerFunction": "zp_class_human_register",
+        "registerFunctionNormalized": "zp_class_human_register",
+        "registerVar": "g_HumanClassID",
+        "displayNameToken": "humanclass1_name",
+        "warnings": [
+          "No se pudo resolver modelo adicional (zp_class_human_register_model línea 32)"
+        ],
+        "transformations": [],
+        "conflicts": [],
+        "bundle": "zp50_class_human_classic",
+        "normalizedName": "classic human",
+        "supplemental": [
+          {
+            "function": "zp_class_human_register_model",
+            "params": {
+              "models": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "5c27609d7f5532fb27a2d2d3eabf1a7ee77b9eb5",
+      "type": "human_class",
+      "name": "Raptor",
+      "fileName": "zp50_class_human_raptor",
+      "enabled": true,
+      "source": "scan",
+      "stats": {
+        "health": 100,
+        "speed": 240,
+        "gravity": 1,
+        "armor": 0
+      },
+      "paths": {
+        "models": [],
+        "sounds": [],
+        "sprites": []
+      },
+      "meta": {
+        "originFile": "NewZombie/cstrike/addons/amxmodx/scripting/zp50/zp50_class_human_raptor.sma",
+        "originVersion": "zp_5_0_8a",
+        "originLabel": "Zombie Plague 5.0.8a",
+        "originIsAddon": false,
+        "originBaseVersion": "zp_5_0_8a",
+        "migrated": false,
+        "registerLine": 29,
+        "registerFunction": "zp_class_human_register",
+        "registerFunctionNormalized": "zp_class_human_register",
+        "registerVar": "g_HumanClassID",
+        "displayNameToken": "humanclass2_name",
+        "warnings": [
+          "No se pudo resolver modelo adicional (zp_class_human_register_model línea 32)"
+        ],
+        "transformations": [],
+        "conflicts": [],
+        "bundle": "zp50_class_human_raptor",
+        "normalizedName": "raptor",
+        "supplemental": [
+          {
+            "function": "zp_class_human_register_model",
+            "params": {
+              "models": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "41a149828a69a2ab803be5a72ef43bcac576cfdb",
+      "type": "zombie_class",
+      "name": "Classic Zombie",
+      "fileName": "zp50_class_zombie_classic",
+      "enabled": true,
+      "source": "scan",
+      "stats": {
+        "health": 2000,
+        "speed": 250,
+        "gravity": 1,
+        "knockback": 1
+      },
+      "paths": {
+        "models": [],
+        "sounds": [],
+        "sprites": []
+      },
+      "meta": {
+        "originFile": "NewZombie/cstrike/addons/amxmodx/scripting/zp50/zp50_class_zombie_classic.sma",
+        "originVersion": "zp_5_0_8a",
+        "originLabel": "Zombie Plague 5.0.8a",
+        "originIsAddon": false,
+        "originBaseVersion": "zp_5_0_8a",
+        "migrated": false,
+        "registerLine": 33,
+        "registerFunction": "zp_class_zombie_register",
+        "registerFunctionNormalized": "zp_class_zombie_register",
+        "registerVar": "g_ZombieClassID",
+        "displayNameToken": "zombieclass1_name",
+        "warnings": [
+          "No se pudo resolver knockback adicional (zp_class_zombie_register_kb línea 34)",
+          "No se pudo resolver modelo adicional (zp_class_zombie_register_model línea 36)",
+          "No se pudo resolver knockback adicional (zp_class_zombie_register_kb línea 46)",
+          "No se pudo resolver modelo adicional (zp_class_zombie_register_model línea 48)",
+          "No se pudo resolver knockback adicional (zp_class_zombie_register_kb línea 47)",
+          "No se pudo resolver modelo adicional (zp_class_zombie_register_model línea 49)",
+          "No se pudo resolver knockback adicional (zp_class_zombie_register_kb línea 35)",
+          "No se pudo resolver modelo adicional (zp_class_zombie_register_model línea 37)"
+        ],
+        "transformations": [],
+        "conflicts": [
+          {
+            "originFile": "zp50_class_zombie_dasher.sma",
+            "registerLine": 45
+          },
+          {
+            "originFile": "zp50_half_blood_zombie.sma",
+            "registerLine": 46
+          },
+          {
+            "originFile": "zp50_headless_zombie.sma",
+            "registerLine": 34
+          }
+        ],
+        "bundle": "zp50_class_zombie_classic",
+        "normalizedName": "classic zombie",
+        "supplemental": [
+          {
+            "function": "zp_class_zombie_register_kb",
+            "params": {
+              "knockback": 1
+            }
+          },
+          {
+            "function": "zp_class_zombie_register_model",
+            "params": {
+              "models": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "aef33905710de550792d87968033907b6038b68f",
+      "type": "zombie_class",
+      "name": "Fat Zombie",
+      "fileName": "zp50_class_zombie_fat",
+      "enabled": true,
+      "source": "scan",
+      "stats": {
+        "health": 2000,
+        "speed": 250,
+        "gravity": 1,
+        "knockback": 1
+      },
+      "paths": {
+        "models": [],
+        "sounds": [],
+        "sprites": []
+      },
+      "meta": {
+        "originFile": "NewZombie/cstrike/addons/amxmodx/scripting/zp50/zp50_class_zombie_fat.sma",
+        "originVersion": "zp_5_0_8a",
+        "originLabel": "Zombie Plague 5.0.8a",
+        "originIsAddon": false,
+        "originBaseVersion": "zp_5_0_8a",
+        "migrated": false,
+        "registerLine": 33,
+        "registerFunction": "zp_class_zombie_register",
+        "registerFunctionNormalized": "zp_class_zombie_register",
+        "registerVar": "g_ZombieClassID",
+        "displayNameToken": "zombieclass4_name",
+        "warnings": [
+          "No se pudo resolver knockback adicional (zp_class_zombie_register_kb línea 34)",
+          "No se pudo resolver modelo adicional (zp_class_zombie_register_model línea 36)"
+        ],
+        "transformations": [],
+        "conflicts": [],
+        "bundle": "zp50_class_zombie_fat",
+        "normalizedName": "fat zombie",
+        "supplemental": [
+          {
+            "function": "zp_class_zombie_register_kb",
+            "params": {
+              "knockback": 1
+            }
+          },
+          {
+            "function": "zp_class_zombie_register_model",
+            "params": {
+              "models": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "714cf43817447c7de77e305b6b22cf67ea24753b",
+      "type": "zombie_class",
+      "name": "zp50_class_zombie_leech",
+      "fileName": "zp50_class_zombie_leech",
+      "enabled": true,
+      "source": "scan",
+      "stats": {
+        "health": 2000,
+        "speed": 250,
+        "gravity": 1,
+        "knockback": 1
+      },
+      "paths": {
+        "models": [],
+        "sounds": [],
+        "sprites": []
+      },
+      "meta": {
+        "originFile": "NewZombie/cstrike/addons/amxmodx/scripting/zp50/zp50_class_zombie_leech.sma",
+        "originVersion": "zp_5_0_8a",
+        "originLabel": "Zombie Plague 5.0.8a",
+        "originIsAddon": false,
+        "originBaseVersion": "zp_5_0_8a",
+        "migrated": false,
+        "registerLine": 43,
+        "registerFunction": "zp_class_zombie_register",
+        "registerFunctionNormalized": "zp_class_zombie_register",
+        "registerVar": "g_ZombieClassID",
+        "warnings": [
+          "No se pudo resolver knockback adicional (zp_class_zombie_register_kb línea 44)",
+          "No se pudo resolver modelo adicional (zp_class_zombie_register_model línea 46)"
+        ],
+        "transformations": [],
+        "conflicts": [],
+        "bundle": "zp50_class_zombie_leech",
+        "normalizedName": "zp50_class_zombie_leech",
+        "supplemental": [
+          {
+            "function": "zp_class_zombie_register_kb",
+            "params": {
+              "knockback": 1
+            }
+          },
+          {
+            "function": "zp_class_zombie_register_model",
+            "params": {
+              "models": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "8cc11756262fe8c034188153258671c2f8a9dad6",
+      "type": "zombie_class",
+      "name": "Light Zombie",
+      "fileName": "zp50_class_zombie_light",
+      "enabled": true,
+      "source": "scan",
+      "stats": {
+        "health": 2000,
+        "speed": 250,
+        "gravity": 1,
+        "knockback": 1
+      },
+      "paths": {
+        "models": [],
+        "sounds": [],
+        "sprites": []
+      },
+      "meta": {
+        "originFile": "NewZombie/cstrike/addons/amxmodx/scripting/zp50/zp50_class_zombie_light.sma",
+        "originVersion": "zp_5_0_8a",
+        "originLabel": "Zombie Plague 5.0.8a",
+        "originIsAddon": false,
+        "originBaseVersion": "zp_5_0_8a",
+        "migrated": false,
+        "registerLine": 33,
+        "registerFunction": "zp_class_zombie_register",
+        "registerFunctionNormalized": "zp_class_zombie_register",
+        "registerVar": "g_ZombieClassID",
+        "displayNameToken": "zombieclass3_name",
+        "warnings": [
+          "No se pudo resolver knockback adicional (zp_class_zombie_register_kb línea 34)",
+          "No se pudo resolver modelo adicional (zp_class_zombie_register_model línea 36)"
+        ],
+        "transformations": [],
+        "conflicts": [],
+        "bundle": "zp50_class_zombie_light",
+        "normalizedName": "light zombie",
+        "supplemental": [
+          {
+            "function": "zp_class_zombie_register_kb",
+            "params": {
+              "knockback": 1
+            }
+          },
+          {
+            "function": "zp_class_zombie_register_model",
+            "params": {
+              "models": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "a38a2a06d5dbab2d15813776120950c7d8e94a8d",
+      "type": "zombie_class",
+      "name": "Rage Zombie",
+      "fileName": "zp50_class_zombie_rage",
+      "enabled": true,
+      "source": "scan",
+      "stats": {
+        "health": 2000,
+        "speed": 250,
+        "gravity": 1,
+        "knockback": 1
+      },
+      "paths": {
+        "models": [],
+        "sounds": [],
+        "sprites": []
+      },
+      "meta": {
+        "originFile": "NewZombie/cstrike/addons/amxmodx/scripting/zp50/zp50_class_zombie_rage.sma",
+        "originVersion": "zp_5_0_8a",
+        "originLabel": "Zombie Plague 5.0.8a",
+        "originIsAddon": false,
+        "originBaseVersion": "zp_5_0_8a",
+        "migrated": false,
+        "registerLine": 36,
+        "registerFunction": "zp_class_zombie_register",
+        "registerFunctionNormalized": "zp_class_zombie_register",
+        "registerVar": "g_ZombieClassID",
+        "displayNameToken": "zombieclass6_name",
+        "warnings": [
+          "No se pudo resolver knockback adicional (zp_class_zombie_register_kb línea 37)",
+          "No se pudo resolver modelo adicional (zp_class_zombie_register_model línea 39)"
+        ],
+        "transformations": [],
+        "conflicts": [],
+        "bundle": "zp50_class_zombie_rage",
+        "normalizedName": "rage zombie",
+        "supplemental": [
+          {
+            "function": "zp_class_zombie_register_kb",
+            "params": {
+              "knockback": 1
+            }
+          },
+          {
+            "function": "zp_class_zombie_register_model",
+            "params": {
+              "models": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "372ce28254febed02d7a310baca8f56304a44e08",
+      "type": "zombie_class",
+      "name": "Raptor Zombie",
+      "fileName": "zp50_class_zombie_raptor",
+      "enabled": true,
+      "source": "scan",
+      "stats": {
+        "health": 2000,
+        "speed": 250,
+        "gravity": 1,
+        "knockback": 1
+      },
+      "paths": {
+        "models": [],
+        "sounds": [],
+        "sprites": []
+      },
+      "meta": {
+        "originFile": "NewZombie/cstrike/addons/amxmodx/scripting/zp50/zp50_class_zombie_raptor.sma",
+        "originVersion": "zp_5_0_8a",
+        "originLabel": "Zombie Plague 5.0.8a",
+        "originIsAddon": false,
+        "originBaseVersion": "zp_5_0_8a",
+        "migrated": false,
+        "registerLine": 33,
+        "registerFunction": "zp_class_zombie_register",
+        "registerFunctionNormalized": "zp_class_zombie_register",
+        "registerVar": "g_ZombieClassID",
+        "displayNameToken": "zombieclass2_name",
+        "warnings": [
+          "No se pudo resolver knockback adicional (zp_class_zombie_register_kb línea 34)",
+          "No se pudo resolver modelo adicional (zp_class_zombie_register_model línea 36)"
+        ],
+        "transformations": [],
+        "conflicts": [],
+        "bundle": "zp50_class_zombie_raptor",
+        "normalizedName": "raptor zombie",
+        "supplemental": [
+          {
+            "function": "zp_class_zombie_register_kb",
+            "params": {
+              "knockback": 1
+            }
+          },
+          {
+            "function": "zp_class_zombie_register_model",
+            "params": {
+              "models": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "b10945e04d48666865fd87af97906355388c114c",
+      "type": "zombie_class",
+      "name": "zp50_zp43_compat",
+      "fileName": "zp50_zp43_compat",
+      "enabled": true,
+      "source": "scan",
+      "stats": {
+        "health": 2000,
+        "speed": 250,
+        "gravity": 1,
+        "knockback": 1
+      },
+      "paths": {
+        "models": [],
+        "sounds": [],
+        "sprites": []
+      },
+      "meta": {
+        "originFile": "NewZombie/cstrike/addons/amxmodx/scripting/zp50/zp50_zp43_compat.sma",
+        "originVersion": "zp_5_0_8a",
+        "originLabel": "Zombie Plague 5.0.8a",
+        "originIsAddon": false,
+        "originBaseVersion": "zp_5_0_8a",
+        "migrated": false,
+        "registerLine": 1119,
+        "registerFunction": "zp_class_zombie_register",
+        "registerFunctionNormalized": "zp_class_zombie_register",
+        "registerVar": "classid",
+        "warnings": [
+          "No se pudo resolver modelo adicional (zp_class_zombie_register_model línea 1121)",
+          "No se pudo resolver knockback adicional (zp_class_zombie_register_kb línea 1123)"
+        ],
+        "transformations": [],
+        "conflicts": [],
+        "bundle": "zp50_zp43_compat",
+        "normalizedName": "zp50_zp43_compat",
+        "supplemental": [
+          {
+            "function": "zp_class_zombie_register_model",
+            "params": {
+              "models": []
+            }
+          },
+          {
+            "function": "zp_class_zombie_register_kb",
+            "params": {
+              "knockback": 1
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "b6996f036c8b0b1101b431dd97822d2d73d57f7f",
+      "type": "zombie_class",
+      "name": "zp50_class_zombie_brute_mother",
+      "fileName": "zp50_class_zombie_brute_mother",
+      "enabled": true,
+      "source": "scan",
+      "stats": {
+        "health": 2000,
+        "speed": 250,
+        "gravity": 1,
+        "knockback": 1
+      },
+      "paths": {
+        "models": [],
+        "sounds": [],
+        "sprites": []
+      },
+      "meta": {
+        "originFile": "zp50_class_zombie_brute_mother.sma",
+        "originVersion": "zp_5_0_8a",
+        "originLabel": "Zombie Plague 5.0.8a",
+        "originIsAddon": false,
+        "originBaseVersion": "zp_5_0_8a",
+        "migrated": false,
+        "registerLine": 157,
+        "registerFunction": "zp_class_zombie_register",
+        "registerFunctionNormalized": "zp_class_zombie_register",
+        "registerVar": "g_iMotherIndex",
+        "warnings": [
+          "No se pudo resolver knockback adicional (zp_class_zombie_register_kb línea 158)",
+          "No se pudo resolver modelo adicional (zp_class_zombie_register_model línea 160)"
+        ],
+        "transformations": [],
+        "conflicts": [],
+        "bundle": "zp50_class_zombie_brute_mother",
+        "normalizedName": "zp50_class_zombie_brute_mother",
+        "supplemental": [
+          {
+            "function": "zp_class_zombie_register_kb",
+            "params": {
+              "knockback": 1
+            }
+          },
+          {
+            "function": "zp_class_zombie_register_model",
+            "params": {
+              "models": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "951242243160106b69ce0876de9eef50f850ea12",
+      "type": "zombie_class",
+      "name": "zp50_class_zombie_burning",
+      "fileName": "zp50_class_zombie_burning",
+      "enabled": true,
+      "source": "scan",
+      "stats": {
+        "health": 2000,
+        "speed": 250,
+        "gravity": 1,
+        "knockback": 1
+      },
+      "paths": {
+        "models": [],
+        "sounds": [],
+        "sprites": []
+      },
+      "meta": {
+        "originFile": "zp50_class_zombie_burning.sma",
+        "originVersion": "zp_5_0_8a",
+        "originLabel": "Zombie Plague 5.0.8a",
+        "originIsAddon": false,
+        "originBaseVersion": "zp_5_0_8a",
+        "migrated": false,
+        "registerLine": 160,
+        "registerFunction": "zp_class_zombie_register",
+        "registerFunctionNormalized": "zp_class_zombie_register",
+        "registerVar": "g_iBurningIndex",
+        "warnings": [
+          "No se pudo resolver knockback adicional (zp_class_zombie_register_kb línea 161)",
+          "No se pudo resolver modelo adicional (zp_class_zombie_register_model línea 163)"
+        ],
+        "transformations": [],
+        "conflicts": [],
+        "bundle": "zp50_class_zombie_burning",
+        "normalizedName": "zp50_class_zombie_burning",
+        "supplemental": [
+          {
+            "function": "zp_class_zombie_register_kb",
+            "params": {
+              "knockback": 1
+            }
+          },
+          {
+            "function": "zp_class_zombie_register_model",
+            "params": {
+              "models": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "c17964c3b2f7d24aa78ca9befc85659ef3f83719",
+      "type": "zombie_class",
+      "name": "zp50_class_zombie_executioner",
+      "fileName": "zp50_class_zombie_executioner",
+      "enabled": true,
+      "source": "scan",
+      "stats": {
+        "health": 2000,
+        "speed": 250,
+        "gravity": 1,
+        "knockback": 1
+      },
+      "paths": {
+        "models": [],
+        "sounds": [],
+        "sprites": []
+      },
+      "meta": {
+        "originFile": "zp50_class_zombie_executioner.sma",
+        "originVersion": "zp_5_0_8a",
+        "originLabel": "Zombie Plague 5.0.8a",
+        "originIsAddon": false,
+        "originBaseVersion": "zp_5_0_8a",
+        "migrated": false,
+        "registerLine": 137,
+        "registerFunction": "zp_class_zombie_register",
+        "registerFunctionNormalized": "zp_class_zombie_register",
+        "registerVar": "g_iExecutionerIndex",
+        "warnings": [
+          "No se pudo resolver knockback adicional (zp_class_zombie_register_kb línea 138)",
+          "No se pudo resolver modelo adicional (zp_class_zombie_register_model línea 140)"
+        ],
+        "transformations": [],
+        "conflicts": [],
+        "bundle": "zp50_class_zombie_executioner",
+        "normalizedName": "zp50_class_zombie_executioner",
+        "supplemental": [
+          {
+            "function": "zp_class_zombie_register_kb",
+            "params": {
+              "knockback": 1
+            }
+          },
+          {
+            "function": "zp_class_zombie_register_model",
+            "params": {
+              "models": []
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "b4e3cf33d8516842546864c7972f097bd1648eeb",
+      "type": "zombie_class",
+      "name": "zp_class_zombie_deimos",
+      "fileName": "zp_class_zombie_deimos",
+      "enabled": true,
+      "source": "scan",
+      "stats": {
+        "health": 2000,
+        "speed": 250,
+        "gravity": 1,
+        "knockback": 1
+      },
+      "paths": {
+        "models": [],
+        "sounds": [],
+        "sprites": []
+      },
+      "meta": {
+        "originFile": "zp_class_zombie_deimos.sma",
+        "originVersion": "zp_5_0_8a",
+        "originLabel": "Zombie Plague 5.0.8a",
+        "originIsAddon": false,
+        "originBaseVersion": "zp_5_0_8a",
+        "migrated": false,
+        "registerLine": 54,
+        "registerFunction": "zp_register_zombie_class",
+        "registerFunctionNormalized": "zp_class_zombie_register",
+        "registerVar": "g_deimos",
+        "warnings": [],
+        "transformations": [
+          "Función zp_register_zombie_class → zp_class_zombie_register (línea 54)"
+        ],
+        "conflicts": [],
+        "bundle": "zp_class_zombie_deimos",
+        "normalizedName": "zp_class_zombie_deimos",
+        "supplemental": []
+      }
+    },
+    {
+      "id": "1ccd4bff151fecfe0fbe0644cd3939ee70ac9d5e",
+      "type": "shop_item",
+      "name": "2",
+      "fileName": "zp_hclass",
+      "enabled": true,
+      "source": "scan",
+      "stats": {
+        "cost": 10,
+        "team": 2,
+        "unlimited": 0
+      },
+      "paths": {
+        "models": [
+          "models/rpgrocket.mdl"
+        ],
+        "sounds": [],
+        "sprites": [
+          "sprites/white.spr",
+          "sprites/zerogxplode.spr"
+        ]
+      },
+      "meta": {
+        "originFile": "zp_hclass.sma",
+        "originVersion": "mixed",
+        "originLabel": "Sintaxis combinada (ZP 4.3 + ZP 5.0.8a)",
+        "originIsAddon": false,
+        "originBaseVersion": "zp_4_3",
+        "migrated": true,
+        "registerLine": 198,
+        "registerFunction": "zp_register_extra_item",
+        "registerFunctionNormalized": "zp_register_extra_item",
+        "registerVar": "g_class",
+        "displayNameToken": "ZP_TEAM_HUMAN",
+        "warnings": [],
+        "transformations": [],
+        "conflicts": [],
+        "bundle": "zp_hclass",
+        "normalizedName": "2",
+        "supplemental": []
+      }
+    }
+  ]
+}

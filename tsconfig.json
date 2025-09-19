@@ -17,7 +17,7 @@
     "paths": {
       "@common/*": [
         "src/common/*"
-      ]
+      ],
     }
   },
   "include": [

@@ -8,8 +8,8 @@ declare global { interface Window { zpb: any } }
 const SECTIONS: { key: ZPType | "model" | "sprite" | "sound", label: string }[] = [
   { key: 'human_class', label: 'Clases Humano' },
   { key: 'zombie_class', label: 'Clases Zombie' },
-  { key: 'human_special', label: 'Clases especiales Humano' },
-  { key: 'zombie_special', label: 'Clases especiales Zombie' },
+  { key: 'special_human_class', label: 'Clases especiales Humano' },
+  { key: 'special_zombie_class', label: 'Clases especiales Zombie' },
   { key: 'mode', label: 'Modos' },
   { key: 'weapon', label: 'Armas' },
   { key: 'shop_item', label: 'Objetos Extras' },
@@ -39,10 +39,10 @@ const emptyItem = (type: ZPType): ZPItem => {
       return { ...base, type: 'zombie_class', stats: getDefaultStats('zombie_class') as ZombieStats }
     case 'human_class':
       return { ...base, type: 'human_class', stats: getDefaultStats('human_class') as HumanStats }
-    case 'zombie_special':
-      return { ...base, type: 'zombie_special', stats: getDefaultStats('zombie_special') as ZombieStats }
-    case 'human_special':
-      return { ...base, type: 'human_special', stats: getDefaultStats('human_special') as HumanStats }
+    case 'special_zombie_class':
+      return { ...base, type: 'special_zombie_class', stats: getDefaultStats('special_zombie_class') as ZombieStats }
+    case 'special_human_class':
+      return { ...base, type: 'special_human_class', stats: getDefaultStats('special_human_class') as HumanStats }
     case 'weapon':
       return { ...base, type: 'weapon', stats: getDefaultStats('weapon') as WeaponStats }
     case 'shop_item':

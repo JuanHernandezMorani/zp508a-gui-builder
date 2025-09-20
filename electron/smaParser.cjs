@@ -1,6 +1,14 @@
 const path = require('path')
 const crypto = require('crypto')
 
+const {
+  ZP508a_DEFAULTS,
+  ensureDefaultTracker,
+  applyDefaultsToEntity,
+  markDefaultOverridden,
+  finalizeDefaultMeta
+} = require('./defaults.cjs')
+
 const VERSION_INFO = {
   zp_5_0_8a: { label: 'Zombie Plague 5.0.8a' },
   zp_4_3: { label: 'Zombie Plague 4.3' },
@@ -9,28 +17,137 @@ const VERSION_INFO = {
   unknown: { label: 'Versión desconocida' }
 }
 
-const REGISTER_FUNCTION_MAPPINGS = {
-  'zp_class_zombie_register': { normalized: 'zp_class_zombie_register', type: 'zombie_class', origin: 'zp_5_0_8a' },
-  'zp_register_zombie_class': { normalized: 'zp_class_zombie_register', type: 'zombie_class', origin: 'zp_5_0_8a' },
-  'zp_register_class_zombie': { normalized: 'zp_class_zombie_register', type: 'zombie_class', origin: 'zp_4_3', legacy: true },
-  'zp_class_human_register': { normalized: 'zp_class_human_register', type: 'human_class', origin: 'zp_5_0_8a' },
-  'zp_register_human_class': { normalized: 'zp_class_human_register', type: 'human_class', origin: 'zp_5_0_8a' },
-  'zp_register_class_human': { normalized: 'zp_class_human_register', type: 'human_class', origin: 'zp_4_3', legacy: true },
-  'zp_register_zombie_special_class': { normalized: 'zp_register_zombie_special_class', type: 'zombie_special', origin: 'zp_5_0_8a' },
-  'zp_register_human_special_class': { normalized: 'zp_register_human_special_class', type: 'human_special', origin: 'zp_5_0_8a' },
-  'zp_register_extra_item': { normalized: 'zp_register_extra_item', type: 'shop_item', origin: 'zp_5_0_8a' },
-  'zp_weapon_register': { normalized: 'zp_weapon_register', type: 'weapon', origin: 'zp_5_0_8a' },
-  'zp_register_gamemode': { normalized: 'zp_register_gamemode', type: 'mode', origin: 'zp_5_0_8a' }
-}
+const REGISTER_FUNCTION_ALIASES = [
+  { names: ['zp_class_zombie_register'], normalized: 'zp_class_zombie_register', type: 'zombie_class', origin: 'zp_5_0_8a' },
+  { names: ['zp_register_zombie_class', 'zp_register_class_zombie'], normalized: 'zp_class_zombie_register', type: 'zombie_class', origin: 'zp_4_3', legacy: true },
+  { names: ['zp_class_human_register'], normalized: 'zp_class_human_register', type: 'human_class', origin: 'zp_5_0_8a' },
+  { names: ['zp_register_human_class', 'zp_register_class_human'], normalized: 'zp_class_human_register', type: 'human_class', origin: 'zp_4_3', legacy: true },
+  { names: ['zp_class_survivor_register'], normalized: 'zp_class_survivor_register', type: 'special_human_class', origin: 'zp_5_0_8a' },
+  { names: ['zp_register_survivor_class'], normalized: 'zp_class_survivor_register', type: 'special_human_class', origin: 'zp_4_3', legacy: true },
+  { names: ['zp_class_sniper_register'], normalized: 'zp_class_sniper_register', type: 'special_human_class', origin: 'zp_5_0_8a' },
+  { names: ['zp_register_sniper_class'], normalized: 'zp_class_sniper_register', type: 'special_human_class', origin: 'zp_4_3', legacy: true },
+  { names: ['zp_class_nemesis_register'], normalized: 'zp_class_nemesis_register', type: 'special_zombie_class', origin: 'zp_5_0_8a' },
+  { names: ['zp_register_nemesis_class'], normalized: 'zp_class_nemesis_register', type: 'special_zombie_class', origin: 'zp_4_3', legacy: true },
+  { names: ['zp_class_assassin_register'], normalized: 'zp_class_assassin_register', type: 'special_zombie_class', origin: 'zp_5_0_8a' },
+  { names: ['zp_register_assassin_class'], normalized: 'zp_class_assassin_register', type: 'special_zombie_class', origin: 'zp_4_3', legacy: true },
+  { names: ['zp_register_zombie_special_class'], normalized: 'zp_register_zombie_special_class', type: 'special_zombie_class', origin: 'zp_5_0_8a' },
+  { names: ['zp_register_human_special_class'], normalized: 'zp_register_human_special_class', type: 'special_human_class', origin: 'zp_5_0_8a' },
+  { names: ['zp_register_extra_item'], normalized: 'zp_register_extra_item', type: 'shop_item', origin: 'zp_5_0_8a' },
+  { names: ['zp_weapon_register'], normalized: 'zp_weapon_register', type: 'weapon', origin: 'zp_5_0_8a' },
+  { names: ['zp_register_gamemode'], normalized: 'zp_register_gamemode', type: 'mode', origin: 'zp_5_0_8a' },
+  { names: ['zp_register_mode'], normalized: 'zp_register_gamemode', type: 'mode', origin: 'zp_4_3', legacy: true }
+]
 
-const REGISTER_FUNCTIONS = Object.keys(REGISTER_FUNCTION_MAPPINGS)
+const REGISTER_FUNCTION_MAPPINGS = {}
+const REGISTER_FUNCTIONS = []
+
+for (const entry of REGISTER_FUNCTION_ALIASES) {
+  if (!entry || !Array.isArray(entry.names)) continue
+  for (const rawName of entry.names) {
+    if (!rawName) continue
+    const lower = rawName.toLowerCase()
+    REGISTER_FUNCTION_MAPPINGS[lower] = {
+      normalized: entry.normalized,
+      type: entry.type,
+      origin: entry.origin,
+      legacy: Boolean(entry.legacy)
+    }
+    if (!REGISTER_FUNCTIONS.includes(rawName)) REGISTER_FUNCTIONS.push(rawName)
+  }
+}
 const REGISTER_FUNCTION_SET = new Set(REGISTER_FUNCTIONS.map(name => name.toLowerCase()))
 
-const SUPPLEMENTAL_FUNCTIONS = [
-  'zp_class_zombie_register_kb',
-  'zp_class_zombie_register_model',
-  'zp_class_human_register_model'
+const SUPPLEMENTAL_ALIAS_ENTRIES = [
+  {
+    names: ['zp_class_zombie_register_kb', 'zp_register_zombie_class_kb'],
+    handler: { kind: 'stat', field: 'knockback', allowedTypes: ['zombie_class', 'special_zombie_class'] }
+  },
+  {
+    names: ['zp_class_zombie_register_model', 'zp_register_zombie_class_model'],
+    handler: { kind: 'models', allowedTypes: ['zombie_class', 'special_zombie_class'] }
+  },
+  {
+    names: ['zp_class_zombie_register_claw', 'zp_register_zombie_class_claw'],
+    handler: { kind: 'models', allowedTypes: ['zombie_class', 'special_zombie_class'] }
+  },
+  {
+    names: ['zp_class_zombie_register_sound', 'zp_register_zombie_class_sound'],
+    handler: { kind: 'sounds', allowedTypes: ['zombie_class', 'special_zombie_class'] }
+  },
+  {
+    names: ['zp_class_human_register_model', 'zp_register_human_class_model'],
+    handler: { kind: 'models', allowedTypes: ['human_class', 'special_human_class'] }
+  },
+  {
+    names: ['zp_class_human_register_sound', 'zp_register_human_class_sound'],
+    handler: { kind: 'sounds', allowedTypes: ['human_class', 'special_human_class'] }
+  },
+  {
+    names: ['zp_class_survivor_register_model', 'zp_register_survivor_class_model'],
+    handler: { kind: 'models', allowedTypes: ['special_human_class'] }
+  },
+  {
+    names: ['zp_class_survivor_register_sound', 'zp_register_survivor_class_sound'],
+    handler: { kind: 'sounds', allowedTypes: ['special_human_class'] }
+  },
+  {
+    names: ['zp_class_sniper_register_model', 'zp_register_sniper_class_model'],
+    handler: { kind: 'models', allowedTypes: ['special_human_class'] }
+  },
+  {
+    names: ['zp_class_sniper_register_sound', 'zp_register_sniper_class_sound'],
+    handler: { kind: 'sounds', allowedTypes: ['special_human_class'] }
+  },
+  {
+    names: ['zp_class_nemesis_register_model', 'zp_register_nemesis_class_model'],
+    handler: { kind: 'models', allowedTypes: ['special_zombie_class'] }
+  },
+  {
+    names: ['zp_class_nemesis_register_sound', 'zp_register_nemesis_class_sound'],
+    handler: { kind: 'sounds', allowedTypes: ['special_zombie_class'] }
+  },
+  {
+    names: ['zp_class_assassin_register_model', 'zp_register_assassin_class_model'],
+    handler: { kind: 'models', allowedTypes: ['special_zombie_class'] }
+  },
+  {
+    names: ['zp_class_assassin_register_sound', 'zp_register_assassin_class_sound'],
+    handler: { kind: 'sounds', allowedTypes: ['special_zombie_class'] }
+  },
+  {
+    names: ['zp_class_survivor_register_sprite', 'zp_register_survivor_class_sprite'],
+    handler: { kind: 'sprites', allowedTypes: ['special_human_class'] }
+  },
+  {
+    names: ['zp_class_sniper_register_sprite', 'zp_register_sniper_class_sprite'],
+    handler: { kind: 'sprites', allowedTypes: ['special_human_class'] }
+  },
+  {
+    names: ['zp_class_nemesis_register_sprite', 'zp_register_nemesis_class_sprite'],
+    handler: { kind: 'sprites', allowedTypes: ['special_zombie_class'] }
+  },
+  {
+    names: ['zp_class_assassin_register_sprite', 'zp_register_assassin_class_sprite'],
+    handler: { kind: 'sprites', allowedTypes: ['special_zombie_class'] }
+  }
 ]
+
+const SUPPLEMENTAL_FUNCTIONS = []
+const SUPPLEMENTAL_HANDLERS = {}
+
+for (const entry of SUPPLEMENTAL_ALIAS_ENTRIES) {
+  if (!entry || !Array.isArray(entry.names) || !entry.names.length) continue
+  for (const rawName of entry.names) {
+    if (!rawName) continue
+    if (!SUPPLEMENTAL_FUNCTIONS.includes(rawName)) SUPPLEMENTAL_FUNCTIONS.push(rawName)
+    SUPPLEMENTAL_HANDLERS[rawName.toLowerCase()] = {
+      kind: entry.handler.kind,
+      field: entry.handler.field,
+      allowedTypes: entry.handler.allowedTypes ? new Set(entry.handler.allowedTypes) : null,
+      resourceArgs: entry.handler.resourceArgs ? entry.handler.resourceArgs.slice() : null
+    }
+  }
+}
 
 const ESCAPE_REGEX = /[-/\\^$*+?.()|[\]{}]/g
 function esc(s){ return s.replace(ESCAPE_REGEX, '\\$&') }
@@ -38,8 +155,8 @@ function esc(s){ return s.replace(ESCAPE_REGEX, '\\$&') }
 const TYPE_STAT_FIELDS = {
   zombie_class: ['health', 'speed', 'gravity', 'knockback'],
   human_class: ['health', 'speed', 'gravity', 'armor'],
-  zombie_special: ['health', 'speed', 'gravity', 'knockback'],
-  human_special: ['health', 'speed', 'gravity', 'armor'],
+  special_zombie_class: ['health', 'speed', 'gravity', 'knockback'],
+  special_human_class: ['health', 'speed', 'gravity', 'armor'],
   weapon: ['damage', 'clip_capacity', 'fire_rate', 'reload_time', 'cost'],
   shop_item: ['cost', 'team', 'unlimited']
 }
@@ -73,21 +190,8 @@ const RESOURCE_EXTENSIONS = {
   sprites: ['.spr']
 }
 
-const CLASS_TYPES = new Set(['zombie_class', 'human_class', 'zombie_special', 'human_special'])
-
-const ZP508a_DEFAULTS = Object.freeze({
-  human_class: { health: 100, speed: 240, gravity: 1.0, armor: 0 },
-  human_special: { health: 100, speed: 240, gravity: 1.0, armor: 0 },
-  zombie_class: { health: 2000, speed: 250, gravity: 1.0, knockback: 1.0 },
-  zombie_special: { health: 2000, speed: 250, gravity: 1.0, knockback: 1.0 }
-})
-
-const DEFAULT_VALUES = {
-  ...ZP508a_DEFAULTS,
-  weapon: { damage: 0, clip_capacity: 0, fire_rate: 0, reload_time: 0, cost: 0 },
-  shop_item: { cost: 0, team: 0, unlimited: 0 },
-  mode: {}
-}
+const CLASS_TYPES = new Set(['zombie_class', 'human_class', 'special_zombie_class', 'special_human_class'])
+const CLASS_RESOURCE_KINDS = new Set(['models', 'sounds', 'sprites'])
 
 const HARDCODED_CONSTANTS = {
   humanclass1_name: 'Classic Human',
@@ -235,8 +339,10 @@ function parseSMAEntities(filePath, rawText) {
 
   const fileBase = path.basename(filePath, '.sma')
   const originFile = computeOriginFile(filePath)
-  const entitiesByKey = new Map()
   const orderedEntities = []
+  const conflictTracker = new Map()
+  const entityRegistry = createEntityRegistry()
+  context.entityRegistry = entityRegistry
 
   for (const call of registerCalls) {
     const lowerName = call.name.toLowerCase()
@@ -266,7 +372,7 @@ function parseSMAEntities(filePath, rawText) {
     const rawName = nameInfo.value || call.assignedVar || fileBase
     const cleanName = typeof rawName === 'string' ? rawName.trim() : String(rawName || '')
     const normalizedName = normalizeName(cleanName)
-    const { stats, defaultsApplied } = extractStatsForEntity(call, mapping.type, context, prefixes)
+    const { stats, resolvedFrom } = extractStatsForEntity(call, mapping.type, context, prefixes)
     const initialPaths = collectPathsFromArgs(call, mapping.type, context)
     const pathSets = createPathSets(mapping.type, initialPaths)
 
@@ -297,45 +403,31 @@ function parseSMAEntities(filePath, rawText) {
         bundle: fileBase,
         normalizedName,
         extraCalls: [],
-        defaultedFields: new Set(defaultsApplied || [])
+        resolvedFrom: {}
       },
       _registerIndex: call.index,
       _prefixes: prefixes,
       _pathSets: pathSets
     }
 
+    if (resolvedFrom && typeof resolvedFrom === 'object') {
+      for (const [field, set] of Object.entries(resolvedFrom)) {
+        if (!(set instanceof Set)) continue
+        const target = ensureResolvedFromEntry(entity.meta, field)
+        if (!target) continue
+        for (const tag of set) target.add(tag)
+      }
+    }
+
+    ensureDefaultTracker(entity)
+
     gatherEntityLookupKeys(entity, call, context)
+    registerEntityLookup(entityRegistry, entity, call)
+    registerEntityConflict(conflictTracker, entity, context, call)
 
     context.currentWarnings = null
 
-    const key = `${entity.type}|${normalizedName}`
-    const existing = entitiesByKey.get(key)
-    if (!existing) {
-      entitiesByKey.set(key, entity)
-      orderedEntities.push(entity)
-    } else {
-      const preferred = choosePreferredEntity(existing, entity)
-      const other = preferred === existing ? entity : existing
-      const preferredWarnings = ensureWarningSet(preferred.meta.warnings)
-      const otherWarnings = ensureWarningSet(other.meta.warnings)
-      otherWarnings.forEach((w) => preferredWarnings.add(w))
-      preferred.meta.warnings = preferredWarnings
-
-      const conflicts = Array.isArray(preferred.meta.conflicts) ? preferred.meta.conflicts : []
-      conflicts.push({
-        originFile: other.meta?.originFile || preferred.meta?.originFile,
-        registerLine: other.meta?.registerLine
-      })
-      preferred.meta.conflicts = conflicts
-
-      mergeDefaultedFields(preferred, other)
-
-      if (preferred !== existing) {
-        entitiesByKey.set(key, preferred)
-        const idx = orderedEntities.indexOf(existing)
-        if (idx !== -1) orderedEntities[idx] = preferred
-      }
-    }
+    orderedEntities.push(entity)
   }
 
   context.currentWarnings = null
@@ -346,7 +438,6 @@ function parseSMAEntities(filePath, rawText) {
 
   const supplementalCalls = findSupplementalCalls(rawText)
   applySupplementalCalls(supplementalCalls, orderedEntities, context)
-  recordDefaultApplications(orderedEntities)
 
   assignResourcesToEntities(orderedEntities, resources)
 
@@ -361,6 +452,10 @@ function parseSMAEntities(filePath, rawText) {
     if (!Array.isArray(entity.meta.conflicts)) entity.meta.conflicts = []
     const normalizedName = entity.meta.normalizedName || normalizeName(entity.name)
     entity.meta.normalizedName = normalizedName
+    const appliedDefaults = applyDefaultsToEntity(entity)
+    for (const field of appliedDefaults) markResolvedFrom(entity.meta, field, 'default')
+    finalizeDefaultMeta(entity)
+    finalizeResolvedFrom(entity.meta)
     entity.id = buildDeterministicId(entity.meta.originFile, entity.type, normalizedName)
     finalizeEntityPaths(entity)
   }
@@ -409,6 +504,70 @@ function ensureStringSet(value) {
     set.add(String(value))
   }
   return set
+}
+
+function ensureResolvedFromEntry(meta, field) {
+  if (!meta || !field) return null
+  if (!meta.resolvedFrom || typeof meta.resolvedFrom !== 'object') meta.resolvedFrom = {}
+  let set = meta.resolvedFrom[field]
+  if (set instanceof Set) return set
+  if (Array.isArray(set)) {
+    const normalized = set.filter(Boolean).map(String)
+    const prepared = new Set(normalized)
+    meta.resolvedFrom[field] = prepared
+    return prepared
+  }
+  if (set && typeof set === 'object' && Array.isArray(set.resolvedFrom)) {
+    const prepared = new Set(set.resolvedFrom.filter(Boolean).map(String))
+    meta.resolvedFrom[field] = prepared
+    return prepared
+  }
+  const fresh = new Set()
+  meta.resolvedFrom[field] = fresh
+  return fresh
+}
+
+function markResolvedFrom(meta, field, tag) {
+  if (!tag) return
+  const set = ensureResolvedFromEntry(meta, field)
+  if (!set) return
+  set.add(String(tag))
+}
+
+function clearResolvedFrom(meta, field, tag) {
+  if (!meta || !field || !tag) return
+  if (!meta.resolvedFrom || typeof meta.resolvedFrom !== 'object') return
+  let set = meta.resolvedFrom[field]
+  if (!set) return
+  if (!(set instanceof Set)) {
+    if (Array.isArray(set)) set = new Set(set.filter(Boolean).map(String))
+    else if (set && typeof set === 'object' && Array.isArray(set.resolvedFrom)) set = new Set(set.resolvedFrom.filter(Boolean).map(String))
+    else set = new Set()
+  }
+  set.delete(String(tag))
+  if (set.size) meta.resolvedFrom[field] = set
+  else delete meta.resolvedFrom[field]
+}
+
+function finalizeResolvedFrom(meta) {
+  if (!meta || typeof meta !== 'object') return
+  if (!meta.resolvedFrom || typeof meta.resolvedFrom !== 'object') {
+    if (meta.resolvedFrom !== undefined) delete meta.resolvedFrom
+    return
+  }
+  const final = {}
+  for (const [field, value] of Object.entries(meta.resolvedFrom)) {
+    let set = value
+    if (!(set instanceof Set)) {
+      if (Array.isArray(set)) set = new Set(set.filter(Boolean).map(String))
+      else if (set && typeof set === 'object' && Array.isArray(set.resolvedFrom)) set = new Set(set.resolvedFrom.filter(Boolean).map(String))
+      else set = new Set()
+    }
+    if (!set.size) continue
+    final[field] = Array.from(set)
+  }
+  if (Object.keys(final).length) meta.resolvedFrom = final
+  else delete meta.resolvedFrom
 }
 
 function detectSmaVersion(filePath, rawText, registerCalls) {
@@ -563,15 +722,33 @@ function collectDefinitions(rawText, commentless, warn) {
   const definitions = new Map()
   const defEntries = []
 
-  const defineRegex = /^#define\s+(\w+)\s+(.+)$/
+  const continuationRegex = /\\\s*$/
   const lines = commentless.split(/\r?\n/)
-  for (const line of lines) {
-    const trimmed = line.trim()
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i]
+    if (!rawLine || !rawLine.includes('#define')) continue
+    const trimmed = rawLine.trim()
     if (!trimmed.startsWith('#define')) continue
-    const match = trimmed.match(defineRegex)
-    if (!match) continue
-    const [, name, expr] = match
-    setDefinition(definitions, defEntries, name, expr.trim(), 'define')
+    const headerMatch = trimmed.match(/^#define\s+(\w+)(.*)$/)
+    if (!headerMatch) continue
+    const name = headerMatch[1]
+    let remainder = headerMatch[2] || ''
+    const parts = []
+    const cleaned = remainder.replace(continuationRegex, '').trim()
+    if (cleaned) parts.push(cleaned)
+    let continued = continuationRegex.test(remainder)
+    while (continued) {
+      i++
+      if (i >= lines.length) break
+      const nextLine = lines[i]
+      const nextTrimmed = (nextLine || '').trim()
+      const withoutContinuation = nextTrimmed.replace(continuationRegex, '').trim()
+      if (withoutContinuation) parts.push(withoutContinuation)
+      continued = continuationRegex.test(nextTrimmed)
+    }
+    const expr = parts.join(' ').trim()
+    if (!expr) continue
+    setDefinition(definitions, defEntries, name, expr, 'define')
   }
 
   const statements = splitStatements(commentless)
@@ -683,12 +860,6 @@ function detectAssignedVariable(text, callIndex) {
   return match ? match[1] : null
 }
 
-const SUPPLEMENTAL_HANDLERS = {
-  zp_class_zombie_register_kb: { kind: 'stat', field: 'knockback' },
-  zp_class_zombie_register_model: { kind: 'models' },
-  zp_class_human_register_model: { kind: 'models' }
-}
-
 function findSupplementalCalls(rawText) {
   return findCalls(rawText, SUPPLEMENTAL_FUNCTIONS)
 }
@@ -699,81 +870,13 @@ function applySupplementalCalls(calls, entities, context) {
 
   const resolver = context && context.resolver
   const warn = context && typeof context.warn === 'function' ? context.warn : () => {}
-  const registryByVar = new Map()
-  const registryByName = new Map()
-  const registryByKey = new Map()
-
-  for (const entity of entities) {
-    if (!entity || !entity.meta) continue
-    const varName = entity.meta.registerVar
-    if (varName) registryByVar.set(varName.toLowerCase(), entity)
-    const normalizedName = entity.meta.normalizedName || normalizeName(entity.name)
-    if (normalizedName) registryByName.set(normalizedName.toLowerCase(), entity)
-    const keys = Array.isArray(entity.meta.lookupKeys) ? entity.meta.lookupKeys : []
-    for (const key of keys) {
-      if (!key) continue
-      const lower = key.toLowerCase()
-      if (!registryByKey.has(lower)) registryByKey.set(lower, [])
-      const list = registryByKey.get(lower)
-      if (!list.includes(entity)) list.push(entity)
-    }
-  }
+  const registry = ensureEntityRegistry(context, entities)
 
   for (const call of calls) {
     const handler = SUPPLEMENTAL_HANDLERS[call.name.toLowerCase()]
     if (!handler || !call.args.length) continue
 
-    const firstArg = call.args[0]
-    const ident = extractIdentifier(firstArg)
-    const candidateKeys = []
-    const seenCandidates = new Set()
-    const addCandidate = (value) => {
-      const normalized = normalizeLookupKey(value)
-      if (normalized && !seenCandidates.has(normalized)) {
-        candidateKeys.push(normalized)
-        seenCandidates.add(normalized)
-      }
-      const normalizedName = normalizeLookupName(value)
-      if (normalizedName && !seenCandidates.has(normalizedName)) {
-        candidateKeys.push(normalizedName)
-        seenCandidates.add(normalizedName)
-      }
-    }
-
-    if (ident) addCandidate(ident)
-    if (firstArg !== undefined) addCandidate(firstArg)
-    if (resolver && firstArg !== undefined) {
-      const resolved = resolver.resolveValue(firstArg, 'supplemental.lookup')
-      const resolvedCandidates = flattenStringValues(resolved)
-      for (const candidate of resolvedCandidates) addCandidate(candidate)
-    }
-
-    let entity = null
-
-    if (ident) {
-      const lowerIdent = ident.toLowerCase()
-      if (registryByVar.has(lowerIdent)) entity = registryByVar.get(lowerIdent)
-    }
-
-    if (!entity) {
-      for (const key of candidateKeys) {
-        const matches = registryByKey.get(key)
-        if (matches && matches.length) {
-          entity = matches[0]
-          break
-        }
-      }
-    }
-
-    if (!entity) {
-      for (const key of candidateKeys) {
-        if (registryByName.has(key)) {
-          entity = registryByName.get(key)
-          break
-        }
-      }
-    }
-
+    const entity = locateEntityForSupplemental(call, handler, registry, resolver)
     if (!entity) {
       const lineInfo = call.line !== undefined ? call.line : '?'
       const warningMessage = `No se encontró entidad base para ${call.name} en línea ${lineInfo}.`
@@ -804,7 +907,9 @@ function applySupplementalCalls(calls, entities, context) {
       let associated = false
       if (numeric === undefined) {
         warn(`No se pudo resolver ${handler.field} adicional (${call.name} línea ${call.line})`)
-        const fallback = entity.stats && entity.stats[handler.field] !== undefined ? entity.stats[handler.field] : DEFAULT_VALUES[entity.type]?.[handler.field]
+        const fallback = entity.stats && entity.stats[handler.field] !== undefined
+          ? entity.stats[handler.field]
+          : (ZP508a_DEFAULTS[entity.type] ? ZP508a_DEFAULTS[entity.type][handler.field] : undefined)
         if (fallback !== undefined && entity.stats) {
           entity.stats[handler.field] = fallback
           record.params[handler.field] = fallback
@@ -813,34 +918,46 @@ function applySupplementalCalls(calls, entities, context) {
         entity.stats[handler.field] = numeric
         record.params[handler.field] = numeric
         associated = true
-        if (entity.meta && entity.meta.defaultedFields instanceof Set) {
-          entity.meta.defaultedFields.delete(handler.field)
-        }
+        markDefaultOverridden(entity, handler.field)
+        clearResolvedFrom(entity.meta, handler.field, 'default')
+        clearResolvedFrom(entity.meta, handler.field, 'fallback')
       }
       if (associated) {
         const displayName = formatEntityDisplayName(entity)
         logSupplementalInfo(`Asociado ${handler.field} adicional a ${entity.type} '${displayName}'.`)
       }
-    } else if (handler.kind === 'models') {
-      const expr = call.args[1]
-      const addedModels = createResourceCollector()
-      if (!expr) {
-        warn(`No se pudo resolver modelo adicional (${call.name} línea ${call.line})`)
-      } else {
+    } else if (handler.kind === 'models' || handler.kind === 'sounds' || handler.kind === 'sprites') {
+      const resourceKind = handler.kind
+      const addedResources = createResourceCollector()
+      const indices = Array.isArray(handler.resourceArgs) && handler.resourceArgs.length ? handler.resourceArgs : [1]
+      for (const index of indices) {
+        const expr = call.args[index]
+        if (expr === undefined) continue
         const resolved = resolver ? resolver.resolveValue(expr, 'paths') : undefined
-        const strings = flattenStringValues(resolved)
+        let strings = flattenStringValues(resolved)
+        if (!strings.length && typeof expr === 'string') {
+          const trimmed = expr.trim()
+          if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith('\'') && trimmed.endsWith('\''))) {
+            strings = [parseStringLiteral(trimmed)]
+          }
+        }
         if (!strings.length) {
-          warn(`No se pudo resolver modelo adicional (${call.name} línea ${call.line})`)
+          warn(`No se pudo resolver ${resourceKind} adicional (${call.name} línea ${call.line})`)
+          continue
         }
         for (const value of strings) {
-          addResourceToEntity(entity, 'models', value)
-          addResourceValue(addedModels, value)
+          addResourceToEntity(entity, resourceKind, value)
+          addResourceValue(addedResources, value)
         }
       }
-      record.params.models = addedModels.values.slice()
-      if (addedModels.values.length) {
+
+      if (!record.params) record.params = {}
+      record.params[resourceKind] = addedResources.values.slice()
+
+      if (addedResources.values.length) {
         const displayName = formatEntityDisplayName(entity)
-        logSupplementalInfo(`Asociado modelo adicional a ${entity.type} '${displayName}'.`)
+        const label = resourceKind === 'sounds' ? 'sonido' : (resourceKind === 'sprites' ? 'sprite' : 'modelo')
+        logSupplementalInfo(`Asociado ${label} adicional a ${entity.type} '${displayName}'.`)
       }
     }
 
@@ -848,40 +965,6 @@ function applySupplementalCalls(calls, entities, context) {
     context.currentWarnings = null
   }
   context.currentWarnings = null
-}
-
-function recordDefaultApplications(entities) {
-  if (!Array.isArray(entities)) return
-  for (const entity of entities) {
-    if (!entity || !entity.meta) continue
-    const defaults = entity.meta.defaultedFields
-    if (!(defaults instanceof Set)) {
-      if (defaults !== undefined) delete entity.meta.defaultedFields
-      continue
-    }
-    if (defaults.size === 0) {
-      delete entity.meta.defaultedFields
-      continue
-    }
-    const fields = Array.from(defaults)
-    if (!Array.isArray(entity.meta.extraCalls)) entity.meta.extraCalls = []
-    const alreadyRecorded = entity.meta.extraCalls.some(call => call && call.name === 'zp_5_0_8a_defaults')
-    if (!alreadyRecorded) {
-      entity.meta.extraCalls.push({ name: 'zp_5_0_8a_defaults', params: { fields } })
-    }
-    delete entity.meta.defaultedFields
-  }
-}
-
-function mergeDefaultedFields(target, source) {
-  if (!target || !target.meta) return
-  if (!(target.meta.defaultedFields instanceof Set)) {
-    target.meta.defaultedFields = new Set()
-  }
-  if (!source || !source.meta || !(source.meta.defaultedFields instanceof Set)) return
-  for (const field of source.meta.defaultedFields) {
-    target.meta.defaultedFields.add(field)
-  }
 }
 
 function logSupplementalInfo(message) {
@@ -1279,6 +1362,160 @@ function gatherEntityLookupKeys(entity, call, context) {
   entity.meta.lookupKeys = Array.from(keys)
 }
 
+function createEntityRegistry() {
+  return {
+    byVar: new Map(),
+    byKey: new Map(),
+    byName: new Map(),
+    all: []
+  }
+}
+
+function addRegistryValue(map, value, entity, normalizer) {
+  if (!map || value === undefined || value === null) return
+  const normalized = typeof normalizer === 'function' ? normalizer(value) : value
+  if (!normalized) return
+  const key = String(normalized).toLowerCase()
+  if (!key) return
+  if (!map.has(key)) map.set(key, [])
+  const list = map.get(key)
+  if (!list.includes(entity)) list.push(entity)
+}
+
+function registerEntityLookup(registry, entity, call) {
+  if (!registry || !entity) return
+  const meta = entity.meta || {}
+  addRegistryValue(registry.byVar, meta.registerVar, entity, normalizeLookupKey)
+
+  if (call && Array.isArray(call.args) && call.args.length) {
+    const firstArg = call.args[0]
+    const ident = extractIdentifier(firstArg)
+    addRegistryValue(registry.byVar, ident, entity, normalizeLookupKey)
+    addRegistryValue(registry.byKey, firstArg, entity, normalizeLookupKey)
+    addRegistryValue(registry.byKey, firstArg, entity, normalizeLookupName)
+  }
+
+  const normalizedName = meta.normalizedName || normalizeName(entity.name)
+  addRegistryValue(registry.byName, normalizedName, entity, normalizeLookupName)
+
+  const lookupKeys = Array.isArray(meta.lookupKeys) ? meta.lookupKeys : []
+  for (const key of lookupKeys) {
+    addRegistryValue(registry.byKey, key, entity, normalizeLookupKey)
+    addRegistryValue(registry.byName, key, entity, normalizeLookupName)
+  }
+
+  if (!Array.isArray(registry.all)) registry.all = []
+  if (!registry.all.includes(entity)) registry.all.push(entity)
+}
+
+function ensureEntityRegistry(context, entities) {
+  if (context && context.entityRegistry) return context.entityRegistry
+  const registry = createEntityRegistry()
+  if (Array.isArray(entities)) {
+    for (const entity of entities) registerEntityLookup(registry, entity, null)
+  }
+  if (context) context.entityRegistry = registry
+  return registry
+}
+
+function registerEntityConflict(conflictTracker, entity, context, call) {
+  if (!conflictTracker || !entity || !entity.meta) return
+  const normalizedName = entity.meta.normalizedName || normalizeName(entity.name)
+  if (!normalizedName) return
+  const key = `${entity.type}|${String(normalizedName).toLowerCase()}`
+  if (!conflictTracker.has(key)) {
+    conflictTracker.set(key, [entity])
+    return
+  }
+  const list = conflictTracker.get(key)
+  if (!Array.isArray(list)) {
+    conflictTracker.set(key, [entity])
+    return
+  }
+  const primary = list[0]
+  if (primary && primary !== entity) {
+    const originalLine = primary.meta ? primary.meta.registerLine : undefined
+    const duplicateLine = call && call.line !== undefined ? call.line : entity.meta.registerLine
+    const displayName = formatEntityDisplayName(primary)
+    const message = `Conflicto: ${entity.type} '${displayName}' ya registrado en línea ${originalLine ?? '?'}. Se conserva la primera definición; revisar registro duplicado en línea ${duplicateLine ?? '?'}.`
+    if (context && typeof context.warn === 'function') context.warn(message)
+    else console.warn(message)
+  }
+  for (const existing of list) {
+    if (existing === entity) continue
+    addConflictEntry(existing, entity)
+    addConflictEntry(entity, existing)
+  }
+  if (!list.includes(entity)) list.push(entity)
+}
+
+function addConflictEntry(target, other) {
+  if (!target || !target.meta || !other || !other.meta) return
+  if (!Array.isArray(target.meta.conflicts)) target.meta.conflicts = []
+  const info = {
+    originFile: other.meta.originFile || target.meta.originFile,
+    registerLine: other.meta.registerLine
+  }
+  const exists = target.meta.conflicts.some(entry => entry && entry.originFile === info.originFile && entry.registerLine === info.registerLine)
+  if (!exists) target.meta.conflicts.push(info)
+}
+
+function locateEntityForSupplemental(call, handler, registry, resolver) {
+  if (!call || !Array.isArray(call.args) || !call.args.length) return null
+  const firstArg = call.args[0]
+  const ident = extractIdentifier(firstArg)
+  const candidateKeys = []
+  const seenCandidates = new Set()
+  const addCandidate = (value) => {
+    const normalized = normalizeLookupKey(value)
+    if (normalized && !seenCandidates.has(normalized)) {
+      candidateKeys.push(normalized)
+      seenCandidates.add(normalized)
+    }
+    const normalizedName = normalizeLookupName(value)
+    if (normalizedName && !seenCandidates.has(normalizedName)) {
+      candidateKeys.push(normalizedName)
+      seenCandidates.add(normalizedName)
+    }
+  }
+
+  if (ident) addCandidate(ident)
+  if (firstArg !== undefined) addCandidate(firstArg)
+  if (resolver && firstArg !== undefined) {
+    const resolved = resolver.resolveValue(firstArg, 'supplemental.lookup')
+    const resolvedCandidates = flattenStringValues(resolved)
+    for (const candidate of resolvedCandidates) addCandidate(candidate)
+  }
+
+  const matches = []
+  const seenEntities = new Set()
+  const allowedTypes = handler && handler.allowedTypes instanceof Set ? handler.allowedTypes : null
+
+  const pushMatches = (list) => {
+    if (!Array.isArray(list)) return
+    for (const entity of list) {
+      if (!entity || seenEntities.has(entity)) continue
+      if (allowedTypes && !allowedTypes.has(entity.type)) continue
+      matches.push(entity)
+      seenEntities.add(entity)
+    }
+  }
+
+  if (ident) pushMatches(lookupRegistryList(registry.byVar, ident))
+  for (const key of candidateKeys) pushMatches(lookupRegistryList(registry.byKey, key))
+  for (const key of candidateKeys) pushMatches(lookupRegistryList(registry.byName, key))
+
+  if (!matches.length && Array.isArray(registry.all)) pushMatches(registry.all)
+
+  return matches.length ? matches[0] : null
+}
+
+function lookupRegistryList(map, key) {
+  if (!map || key === undefined || key === null) return []
+  const normalized = String(key).toLowerCase()
+  return map.get(normalized) || []
+}
+
 function formatEntityDisplayName(entity) {
   if (!entity) return '?'
   if (entity.name !== undefined && entity.name !== null) {
@@ -1430,7 +1667,7 @@ function extensionToKind(ext) {
 
 function isResourceAllowedForType(type, kind) {
   if (type === 'mode') return false
-  if (CLASS_TYPES.has(type)) return kind === 'models'
+  if (CLASS_TYPES.has(type)) return CLASS_RESOURCE_KINDS.has(kind)
   return true
 }
 
@@ -1472,27 +1709,9 @@ function finalizeEntityPaths(entity) {
   delete entity._pathSets
 }
 
-function choosePreferredEntity(a, b) {
-  const scoreA = scoreEntity(a)
-  const scoreB = scoreEntity(b)
-  if (scoreB > scoreA) return b
-  return a
-}
-
-function scoreEntity(entity) {
-  let score = 0
-  const stats = entity.stats || {}
-  for (const value of Object.values(stats)) {
-    if (value !== undefined && value !== null) score += 1
-  }
-  const sets = entity._pathSets || createPathSets(entity.type, entity.paths)
-  score += sets.models.values.length + sets.sounds.values.length + sets.sprites.values.length
-  return score
-}
-
 function extractStatsForEntity(call, type, context, prefixes) {
   const stats = {}
-  const defaultsApplied = new Set()
+  const resolvedMeta = {}
   const fields = TYPE_STAT_FIELDS[type] || []
   for (const field of fields) stats[field] = undefined
 
@@ -1500,6 +1719,8 @@ function extractStatsForEntity(call, type, context, prefixes) {
   const definitionEntries = context.definitions.entries
   const resolver = context.resolver
   const warn = context.warn
+  const defaultsForType = ZP508a_DEFAULTS[type] || {}
+
   for (const field of fields) {
     const keywords = STAT_KEYWORDS[field] || [field]
     const contextKey = `${type}.${field}`
@@ -1519,7 +1740,6 @@ function extractStatsForEntity(call, type, context, prefixes) {
       if (literal !== undefined) resolved = literal
     }
 
-    // Search within call arguments first
     if (resolved === undefined) {
       for (const arg of call.args) {
         const ident = extractIdentifier(arg)
@@ -1540,27 +1760,35 @@ function extractStatsForEntity(call, type, context, prefixes) {
       resolved = findValueInDefinitions(definitionEntries, keywords, prefixes, context)
     }
 
-    if (resolved === undefined) {
-      const hasDefault = DEFAULT_VALUES[type] && DEFAULT_VALUES[type][field] !== undefined
-      if (!hasDefault && warn) {
-        warn(`No se pudo resolver el valor de ${field} en ${call.name} (línea ${call.line})`)
-      }
+    if (resolved === undefined && defaultsForType[field] === undefined && warn) {
+      warn(`No se pudo resolver el valor de ${field} en ${call.name} (línea ${call.line})`)
     }
 
     let numeric = toNumber(resolved)
-    if (numeric === undefined && resolved !== undefined && typeof resolved === 'string') {
+    if (numeric === undefined && resolved !== undefined) {
       const literal = resolveLiteralValue(resolved, resolver, contextKey)
-      numeric = toNumber(literal)
+      if (literal !== undefined) {
+        resolved = literal
+        numeric = toNumber(literal)
+      }
     }
 
-    if (numeric === undefined && DEFAULT_VALUES[type] && DEFAULT_VALUES[type][field] !== undefined) {
-      numeric = DEFAULT_VALUES[type][field]
-      defaultsApplied.add(field)
+    let fallbackUsed = false
+    if (numeric === undefined && resolved !== undefined) {
+      numeric = 0
+      fallbackUsed = true
     }
 
-    stats[field] = numeric
+    if (numeric !== undefined) {
+      stats[field] = numeric
+      if (fallbackUsed) {
+        if (!resolvedMeta[field]) resolvedMeta[field] = new Set()
+        resolvedMeta[field].add('fallback')
+      }
+    }
   }
-  return { stats, defaultsApplied: Array.from(defaultsApplied) }
+
+  return { stats, resolvedFrom: resolvedMeta }
 }
 
 function findValueInDefinitions(entries, keywords, prefixes, context) {
@@ -1695,5 +1923,6 @@ function normalizePath(p) {
 
 module.exports = {
   parseSMAEntities,
-  normalizeName
+  normalizeName,
+  normalizePath
 }

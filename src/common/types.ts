@@ -1,8 +1,8 @@
 export type ZPType = 
   | 'human_class'
   | 'zombie_class'
-  | 'human_special'
-  | 'zombie_special'
+  | 'special_human_class'
+  | 'special_zombie_class'
   | 'mode'
   | 'weapon'
   | 'shop_item'
@@ -48,8 +48,8 @@ export interface ShopItemStats {
 export type ZPItem =
   | (BaseItem & { type: 'zombie_class'; stats: ZombieStats })
   | (BaseItem & { type: 'human_class'; stats: HumanStats })
-  | (BaseItem & { type: 'zombie_special'; stats: ZombieStats })
-  | (BaseItem & { type: 'human_special'; stats: HumanStats })
+  | (BaseItem & { type: 'special_zombie_class'; stats: ZombieStats })
+  | (BaseItem & { type: 'special_human_class'; stats: HumanStats })
   | (BaseItem & { type: 'weapon'; stats: WeaponStats })
   | (BaseItem & { type: 'shop_item'; stats: ShopItemStats })
   | (BaseItem & { type: 'mode' | 'system'; stats: Record<string, any> })

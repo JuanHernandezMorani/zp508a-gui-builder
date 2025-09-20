@@ -7,11 +7,11 @@ import type {
   ShopItemStats
 } from './types'
 
-const CLASS_DEFAULTS: Record<'zombie_class' | 'human_class' | 'zombie_special' | 'human_special', ZombieStats | HumanStats> = {
+const CLASS_DEFAULTS: Record<'zombie_class' | 'human_class' | 'special_zombie_class' | 'special_human_class', ZombieStats | HumanStats> = {
   zombie_class: { health: 2000, speed: 250, gravity: 1.0, knockback: 1.0 },
   human_class: { health: 100, speed: 240, armor: 0, base_damage: 1.0 },
-  zombie_special: { health: 2000, speed: 250, gravity: 1.0, knockback: 1.0 },
-  human_special: { health: 100, speed: 240, armor: 0, base_damage: 1.0 }
+  special_zombie_class: { health: 2000, speed: 250, gravity: 1.0, knockback: 1.0 },
+  special_human_class: { health: 100, speed: 240, armor: 0, base_damage: 1.0 }
 }
 
 const WEAPON_DEFAULTS: WeaponStats = { damage: 0, clip_capacity: 0, fire_rate: 0, reload_time: 0, cost: 0 }
@@ -20,10 +20,10 @@ const SHOP_DEFAULTS: ShopItemStats = { cost: 0, team: 0, unlimited: 0 }
 export function getDefaultStats(type: ZPType): ZombieStats | HumanStats | WeaponStats | ShopItemStats | Record<string, any> {
   switch (type) {
     case 'zombie_class':
-    case 'zombie_special':
+    case 'special_zombie_class':
       return { ...(CLASS_DEFAULTS[type] as ZombieStats) }
     case 'human_class':
-    case 'human_special':
+    case 'special_human_class':
       return { ...(CLASS_DEFAULTS[type] as HumanStats) }
     case 'weapon':
       return { ...WEAPON_DEFAULTS }
@@ -64,9 +64,9 @@ export function sanitizePathsForType(
     return { models: [], sounds: [], sprites: [] }
   }
 
-  if (['human_class', 'zombie_class', 'human_special', 'zombie_special'].includes(type)) {
+  if (['human_class', 'zombie_class', 'special_human_class', 'special_zombie_class'].includes(type)) {
     const filteredModels = base.models.filter((m) => !m.toLowerCase().endsWith('.spr'))
-    return { models: filteredModels, sounds: [], sprites: [] }
+    return { models: filteredModels, sounds: base.sounds, sprites: base.sprites }
   }
 
   return base

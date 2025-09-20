@@ -30,7 +30,8 @@ const emptyItem = (type: ZPType): ZPItem => {
     enabled: true,
     description: '',
     meta: {},
-    paths: { models: [], sounds: [], sprites: [] },
+    paths: { models: [], claws: [], sounds: [], sprites: [] },
+    abilities: [],
     source: 'ui' as const
   }
 

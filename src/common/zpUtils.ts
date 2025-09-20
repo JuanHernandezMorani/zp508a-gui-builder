@@ -41,32 +41,35 @@ export function cloneZPItem<T extends ZPItem>(item: T): T {
     meta: item.meta ? { ...item.meta } : {},
     paths: {
       models: [...(item.paths?.models || [])],
+      claws: [...(item.paths?.claws || [])],
       sounds: [...(item.paths?.sounds || [])],
       sprites: [...(item.paths?.sprites || [])]
-    }
+    },
+    abilities: Array.isArray(item.abilities) ? [...item.abilities] : item.abilities
   } as T
 }
 
 export function sanitizePathsForType(
   type: ZPType,
-  paths?: { models?: string[]; sounds?: string[]; sprites?: string[] }
+  paths?: { models?: string[]; claws?: string[]; sounds?: string[]; sprites?: string[] }
 ) {
   const unique = (values?: string[]) =>
     Array.from(new Set((values || []).map((v) => v.trim()).filter(Boolean)))
 
   const base = {
     models: unique(paths?.models),
+    claws: unique(paths?.claws),
     sounds: unique(paths?.sounds),
     sprites: unique(paths?.sprites)
   }
 
   if (type === 'mode') {
-    return { models: [], sounds: [], sprites: [] }
+    return { models: [], claws: [], sounds: [], sprites: [] }
   }
 
   if (['human_class', 'zombie_class', 'special_human_class', 'special_zombie_class'].includes(type)) {
     const filteredModels = base.models.filter((m) => !m.toLowerCase().endsWith('.spr'))
-    return { models: filteredModels, sounds: base.sounds, sprites: base.sprites }
+    return { models: filteredModels, claws: base.claws, sounds: base.sounds, sprites: base.sprites }
   }
 
   return base

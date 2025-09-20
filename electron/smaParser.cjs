@@ -192,7 +192,7 @@ const RESOURCE_EXTENSIONS = {
 }
 
 const CLASS_TYPES = new Set(['zombie_class', 'human_class', 'special_zombie_class', 'special_human_class'])
-const CLASS_RESOURCE_KINDS = new Set(['models', 'sounds', 'sprites'])
+const CLASS_RESOURCE_KINDS = new Set(['models', 'claws', 'sounds', 'sprites'])
 
 const HARDCODED_CONSTANTS = {
   humanclass1_name: 'Classic Human',
@@ -385,7 +385,8 @@ function parseSMAEntities(filePath, rawText) {
       enabled: true,
       source: 'scan',
       stats,
-      paths: { models: [], sounds: [], sprites: [] },
+      paths: { models: [], claws: [], sounds: [], sprites: [] },
+      abilities: [],
       meta: {
         originFile,
         originVersion: versionInfo.version,
@@ -1729,7 +1730,8 @@ function detectPseudoHumanClasses(filePath, rawText, context, versionInfo, fileB
       enabled: true,
       source: 'scan',
       stats,
-      paths: { models: [], sounds: [], sprites: [] },
+      paths: { models: [], claws: [], sounds: [], sprites: [] },
+      abilities: [],
       meta: {
         originFile,
         originVersion: versionInfo.version,
@@ -1755,7 +1757,7 @@ function detectPseudoHumanClasses(filePath, rawText, context, versionInfo, fileB
       },
       _registerIndex: match.index,
       _prefixes: new Set(),
-      _pathSets: createPathSets('human_class', { models: [], sounds: [], sprites: [] })
+      _pathSets: createPathSets('human_class', { models: [], claws: [], sounds: [], sprites: [] })
     }
 
     if (resolvedMeta && typeof resolvedMeta === 'object') {
@@ -1888,7 +1890,8 @@ function detectMenuArrayEntities(filePath, rawText, context, versionInfo, fileBa
         source: 'scan',
         description: description || undefined,
         stats,
-        paths: { models: [], sounds: [], sprites: [] },
+        paths: { models: [], claws: [], sounds: [], sprites: [] },
+        abilities: [],
         meta: {
           originFile,
           originVersion: versionInfo.version,
@@ -1914,7 +1917,7 @@ function detectMenuArrayEntities(filePath, rawText, context, versionInfo, fileBa
         },
         _registerIndex: line !== undefined ? line : rawText.length,
         _prefixes: new Set(normalizedName ? [normalizedName.toLowerCase()] : []),
-        _pathSets: createPathSets(type, { models: [], sounds: [], sprites: [] })
+        _pathSets: createPathSets(type, { models: [], claws: [], sounds: [], sprites: [] })
       }
 
       applyMenuStatValue(entity, group, index, type)
@@ -2260,6 +2263,7 @@ function resolveEntityName(call, context, fallback) {
 
 function collectPathsFromArgs(call, type, context) {
   const models = createResourceCollector()
+  const claws = createResourceCollector()
   const sounds = createResourceCollector()
   const sprites = createResourceCollector()
   const resolver = context && context.resolver
@@ -2267,17 +2271,18 @@ function collectPathsFromArgs(call, type, context) {
   for (const arg of call.args) {
     const result = collectStringsFromExpression(arg, resolver, 'paths', definitionContainer)
     for (const s of result.values) {
-      categorizeResourcePath(type, s, models, sounds, sprites)
+      categorizeResourcePath(type, s, models, claws, sounds, sprites)
     }
   }
   return {
     models: models.values.slice(),
+    claws: claws.values.slice(),
     sounds: sounds.values.slice(),
     sprites: sprites.values.slice()
   }
 }
 
-function categorizeResourcePath(type, value, models, sounds, sprites) {
+function categorizeResourcePath(type, value, models, claws, sounds, sprites) {
   if (!value || typeof value !== 'string') return
   if (type === 'mode') return
   const normalized = normalizePath(value)
@@ -2379,12 +2384,16 @@ function isResourceAllowedForType(type, kind) {
 function createPathSets(type, initial) {
   const sets = {
     models: createResourceCollector(),
+    claws: createResourceCollector(),
     sounds: createResourceCollector(),
     sprites: createResourceCollector()
   }
   if (initial) {
     if (Array.isArray(initial.models) && isResourceAllowedForType(type, 'models')) {
       for (const value of initial.models) addResourceValue(sets.models, value)
+    }
+    if (Array.isArray(initial.claws) && isResourceAllowedForType(type, 'claws')) {
+      for (const value of initial.claws) addResourceValue(sets.claws, value)
     }
     if (Array.isArray(initial.sounds) && isResourceAllowedForType(type, 'sounds')) {
       for (const value of initial.sounds) addResourceValue(sets.sounds, value)
@@ -2399,15 +2408,16 @@ function createPathSets(type, initial) {
 function addResourceToEntity(entity, kind, value) {
   if (!isResourceAllowedForType(entity.type, kind)) return
   if (!entity._pathSets) {
-    entity._pathSets = createPathSets(entity.type, entity.paths || { models: [], sounds: [], sprites: [] })
+    entity._pathSets = createPathSets(entity.type, entity.paths || { models: [], claws: [], sounds: [], sprites: [] })
   }
   addResourceValue(entity._pathSets[kind], value)
 }
 
 function finalizeEntityPaths(entity) {
   const sets = entity._pathSets || createPathSets(entity.type, entity.paths)
-  const paths = { models: [], sounds: [], sprites: [] }
+  const paths = { models: [], claws: [], sounds: [], sprites: [] }
   if (isResourceAllowedForType(entity.type, 'models')) paths.models = sets.models.values.slice()
+  if (isResourceAllowedForType(entity.type, 'claws')) paths.claws = sets.claws.values.slice()
   if (isResourceAllowedForType(entity.type, 'sounds')) paths.sounds = sets.sounds.values.slice()
   if (isResourceAllowedForType(entity.type, 'sprites')) paths.sprites = sets.sprites.values.slice()
   entity.paths = paths

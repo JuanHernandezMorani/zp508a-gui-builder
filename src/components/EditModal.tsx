@@ -38,7 +38,7 @@ export default function EditModal({ item, onClose, onSave }: EditModalProps) {
   const showSounds = !isMode && !isClass
   const showSprites = !isMode && !isClass
 
-  const currentPaths = draft.paths || { models: [], sounds: [], sprites: [] }
+  const currentPaths = draft.paths || { models: [], claws: [], sounds: [], sprites: [] }
 
   const handleTypeChange = useCallback((nextType: ZPItem['type']) => {
     setDraft((prev) => {
@@ -73,13 +73,14 @@ export default function EditModal({ item, onClose, onSave }: EditModalProps) {
   const transformationLog = asStringArray(item.meta?.transformations)
   const warnings = asStringArray(item.meta?.warnings)
 
-  const updatePaths = (kind: 'models' | 'sounds' | 'sprites', values: string[]) => {
+  const updatePaths = (kind: 'models' | 'claws' | 'sounds' | 'sprites', values: string[]) => {
     setDraft((prev) => {
-      const prevPaths = prev.paths || { models: [], sounds: [], sprites: [] }
+      const prevPaths = prev.paths || { models: [], claws: [], sounds: [], sprites: [] }
       return {
         ...prev,
         paths: {
           models: kind === 'models' ? values : [...prevPaths.models],
+          claws: kind === 'claws' ? values : [...prevPaths.claws],
           sounds: kind === 'sounds' ? values : [...prevPaths.sounds],
           sprites: kind === 'sprites' ? values : [...prevPaths.sprites]
         }

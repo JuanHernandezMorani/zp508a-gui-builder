@@ -817,15 +817,15 @@ function generateGroupedSMA(type, items) {
   }
 
   const headerLines = [
-    '// Auto generado por ZP Builder UI (ZP 5.0.8a)',
+    `// Archivo generado por ZP Builder UI - ${pluginLabel}`,
     `// Fecha: ${now}`,
-    `// Entidades: ${entries.length}`
+    `// Entidades: ${entries.length}`,
+    '// Warnings:'
   ]
   if (warnings.length) {
-    headerLines.push('// Warnings detectados:')
     for (const warn of warnings) headerLines.push(`// - ${warn}`)
   } else {
-    headerLines.push('// Warnings detectados: ninguno')
+    headerLines.push('// - ninguno')
   }
 
   const pluginInit = `public plugin_init() { register_plugin("${escapePawnString(`ZPBuilder - ${pluginLabel}`)}", "0.4.0", "ZPBuilder"); }`

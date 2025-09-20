@@ -33,6 +33,7 @@ const REGISTER_FUNCTION_ALIASES = [
   { names: ['zp_register_zombie_special_class'], normalized: 'zp_register_zombie_special_class', type: 'special_zombie_class', origin: 'zp_5_0_8a' },
   { names: ['zp_register_human_special_class'], normalized: 'zp_register_human_special_class', type: 'special_human_class', origin: 'zp_5_0_8a' },
   { names: ['zp_register_extra_item'], normalized: 'zp_register_extra_item', type: 'shop_item', origin: 'zp_5_0_8a' },
+  { names: ['zp_register_item'], normalized: 'zp_register_extra_item', type: 'shop_item', origin: 'zp_5_0_8a' },
   { names: ['zp_weapon_register'], normalized: 'zp_weapon_register', type: 'weapon', origin: 'zp_5_0_8a' },
   { names: ['zp_register_gamemode'], normalized: 'zp_register_gamemode', type: 'mode', origin: 'zp_5_0_8a' },
   { names: ['zp_register_mode'], normalized: 'zp_register_gamemode', type: 'mode', origin: 'zp_4_3', legacy: true }
@@ -201,8 +202,8 @@ const HARDCODED_CONSTANTS = {
   zombieclass3_name: 'Light Zombie',
   zombieclass4_name: 'Fat Zombie',
   zombieclass6_name: 'Rage Zombie',
-  ZP_TEAM_ZOMBIE: 1 << 0,
-  ZP_TEAM_HUMAN: 1 << 1,
+  ZP_TEAM_ZOMBIE: 2,
+  ZP_TEAM_HUMAN: 1,
   ZP_TEAM_NEMESIS: 1 << 2,
   ZP_TEAM_SURVIVOR: 1 << 3,
   ZP_TEAM_SNIPER: 1 << 4,
@@ -431,6 +432,24 @@ function parseSMAEntities(filePath, rawText) {
   }
 
   context.currentWarnings = null
+
+  const pseudoEntities = detectPseudoHumanClasses(filePath, rawText, context, versionInfo, fileBase, originFile)
+  for (const pseudo of pseudoEntities) {
+    ensureDefaultTracker(pseudo)
+    gatherEntityLookupKeys(pseudo, null, context)
+    registerEntityLookup(entityRegistry, pseudo, null)
+    registerEntityConflict(conflictTracker, pseudo, context, null)
+    orderedEntities.push(pseudo)
+  }
+
+  const menuEntities = detectMenuArrayEntities(filePath, rawText, context, versionInfo, fileBase, originFile)
+  for (const menuEntity of menuEntities) {
+    ensureDefaultTracker(menuEntity)
+    gatherEntityLookupKeys(menuEntity, null, context)
+    registerEntityLookup(entityRegistry, menuEntity, null)
+    registerEntityConflict(conflictTracker, menuEntity, context, null)
+    orderedEntities.push(menuEntity)
+  }
 
   if (!orderedEntities.length && /zp_register_(?:zombie|human|extra|weapon|gamemode)/i.test(rawText)) {
     warn('No se pudieron extraer entidades a pesar de encontrar llamadas de registro.')
@@ -721,6 +740,7 @@ function stripComments(text) {
 function collectDefinitions(rawText, commentless, warn) {
   const definitions = new Map()
   const defEntries = []
+  const arrays = new Map()
 
   const continuationRegex = /\\\s*$/
   const lines = commentless.split(/\r?\n/)
@@ -748,7 +768,7 @@ function collectDefinitions(rawText, commentless, warn) {
     }
     const expr = parts.join(' ').trim()
     if (!expr) continue
-    setDefinition(definitions, defEntries, name, expr, 'define')
+    setDefinition(definitions, defEntries, name, expr, 'define', arrays)
   }
 
   const statements = splitStatements(commentless)
@@ -761,7 +781,7 @@ function collectDefinitions(rawText, commentless, warn) {
       const [, name, inside] = regMatch
       const parts = parseArguments(inside)
       const valueExpr = parts[1] || ''
-      setDefinition(definitions, defEntries, name, valueExpr.trim(), 'register_cvar')
+      setDefinition(definitions, defEntries, name, valueExpr.trim(), 'register_cvar', arrays)
       continue
     }
 
@@ -769,7 +789,7 @@ function collectDefinitions(rawText, commentless, warn) {
     if (setPcvarMatch) {
       const name = extractIdentifier(setPcvarMatch[1])
       const expr = setPcvarMatch[2].replace(/\);?$/, '').trim()
-      if (name) setDefinition(definitions, defEntries, name, expr, 'set_pcvar')
+      if (name) setDefinition(definitions, defEntries, name, expr, 'set_pcvar', arrays)
       continue
     }
 
@@ -790,10 +810,26 @@ function collectDefinitions(rawText, commentless, warn) {
       }
     }
 
-    setDefinition(definitions, defEntries, name, rhs.trim(), 'assignment')
+    setDefinition(definitions, defEntries, name, rhs.trim(), 'assignment', arrays)
   }
 
-  return { definitions, entries: defEntries }
+  const inlineLines = commentless.split(/\r?\n/)
+  for (const rawLine of inlineLines) {
+    const trimmed = (rawLine || '').trim()
+    if (!trimmed) continue
+    if (!/^(?:new\s+)?const\b/i.test(trimmed)) continue
+    if (!trimmed.includes('=')) continue
+    const eqIndex = trimmed.indexOf('=')
+    const lhs = trimmed.slice(0, eqIndex).trim()
+    let rhs = trimmed.slice(eqIndex + 1).trim()
+    if (!lhs || !rhs) continue
+    const name = extractIdentifier(lhs)
+    if (!name || definitions.has(name)) continue
+    if (rhs.endsWith(';')) rhs = rhs.slice(0, -1).trim()
+    setDefinition(definitions, defEntries, name, rhs, 'const-line', arrays)
+  }
+
+  return { definitions, entries: defEntries, arrays }
 }
 
 function collectResources(rawText, commentless, context) {
@@ -870,6 +906,7 @@ function applySupplementalCalls(calls, entities, context) {
 
   const resolver = context && context.resolver
   const warn = context && typeof context.warn === 'function' ? context.warn : () => {}
+  const definitionContainer = context && context.definitions
   const registry = ensureEntityRegistry(context, entities)
 
   for (const call of calls) {
@@ -879,7 +916,7 @@ function applySupplementalCalls(calls, entities, context) {
     const entity = locateEntityForSupplemental(call, handler, registry, resolver)
     if (!entity) {
       const lineInfo = call.line !== undefined ? call.line : '?'
-      const warningMessage = `No se encontró entidad base para ${call.name} en línea ${lineInfo}.`
+      const warningMessage = `No se encontró entidad base para ${call.name} en línea ${lineInfo}`
       warn(warningMessage)
       logSupplementalWarning(warningMessage)
       continue
@@ -891,73 +928,92 @@ function applySupplementalCalls(calls, entities, context) {
     context.currentWarnings = warningSet
 
     if (!Array.isArray(entity.meta.extraCalls)) entity.meta.extraCalls = []
-    const record = { name: call.name, params: {} }
+    const record = {
+      fn: call.name,
+      args: Array.isArray(call.args) ? call.args.slice() : [],
+      kind: normalizeSupplementalKind(handler),
+      line: call.line,
+      resolved: false,
+      resolvedFrom: [],
+      resolvedValues: {},
+      dynamic: false
+    }
+    record.params = record.resolvedValues
 
     if (handler.kind === 'stat') {
       const expr = call.args[1]
-      let resolved = expr && resolver ? resolver.resolveValue(expr, `${entity.type}.${handler.field}`) : undefined
-      let numeric = toNumber(resolved)
-      if (numeric === undefined && expr !== undefined) {
-        const literal = resolveLiteralValue(expr, resolver, `${entity.type}.${handler.field}`)
-        if (literal !== undefined) {
-          resolved = literal
-          numeric = toNumber(literal)
-        }
-      }
-      let associated = false
-      if (numeric === undefined) {
-        warn(`No se pudo resolver ${handler.field} adicional (${call.name} línea ${call.line})`)
-        const fallback = entity.stats && entity.stats[handler.field] !== undefined
-          ? entity.stats[handler.field]
-          : (ZP508a_DEFAULTS[entity.type] ? ZP508a_DEFAULTS[entity.type][handler.field] : undefined)
-        if (fallback !== undefined && entity.stats) {
-          entity.stats[handler.field] = fallback
-          record.params[handler.field] = fallback
-        }
-      } else {
-        entity.stats[handler.field] = numeric
-        record.params[handler.field] = numeric
-        associated = true
+      const contextKey = `${entity.type}.${handler.field}`
+      const info = resolveNumericMeta(expr, resolver, contextKey, definitionContainer)
+      const resolvedSources = new Set()
+      mergeSourceSets(resolvedSources, info.sources)
+      const defaultsForType = ZP508a_DEFAULTS[entity.type] || {}
+      if (info.value !== undefined) {
+        entity.stats[handler.field] = info.value
+        record.resolvedValues[handler.field] = info.value
+        record.resolved = true
         markDefaultOverridden(entity, handler.field)
         clearResolvedFrom(entity.meta, handler.field, 'default')
         clearResolvedFrom(entity.meta, handler.field, 'fallback')
-      }
-      if (associated) {
         const displayName = formatEntityDisplayName(entity)
-        logSupplementalInfo(`Asociado ${handler.field} adicional a ${entity.type} '${displayName}'.`)
+        logSupplementalInfo(`Asociado ${handler.field} adicional a ${entity.type} '${displayName}'`)
+      } else {
+        if (!info.dynamic) {
+          const message = `No se pudo resolver el valor de ${handler.field} en ${call.name} (línea ${call.line ?? '?'})`
+          warn(message)
+        }
+        let fallback = entity.stats && entity.stats[handler.field] !== undefined
+          ? entity.stats[handler.field]
+          : defaultsForType[handler.field]
+        if (fallback === undefined) fallback = 0
+        if (entity.stats) entity.stats[handler.field] = fallback
+        record.resolvedValues[handler.field] = fallback
+        record.resolved = false
+        resolvedSources.add('fallback')
+        markResolvedFrom(entity.meta, handler.field, 'fallback')
       }
+      record.dynamic = Boolean(info.dynamic)
+      record.resolvedFrom = finalizeResolvedTags(resolvedSources)
     } else if (handler.kind === 'models' || handler.kind === 'sounds' || handler.kind === 'sprites') {
       const resourceKind = handler.kind
       const addedResources = createResourceCollector()
       const indices = Array.isArray(handler.resourceArgs) && handler.resourceArgs.length ? handler.resourceArgs : [1]
+      const resolvedSources = new Set()
+      let anyResolved = false
+      let dynamicDetected = false
       for (const index of indices) {
         const expr = call.args[index]
         if (expr === undefined) continue
-        const resolved = resolver ? resolver.resolveValue(expr, 'paths') : undefined
-        let strings = flattenStringValues(resolved)
-        if (!strings.length && typeof expr === 'string') {
-          const trimmed = expr.trim()
-          if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith('\'') && trimmed.endsWith('\''))) {
-            strings = [parseStringLiteral(trimmed)]
+        const result = collectStringsFromExpression(expr, resolver, 'paths', definitionContainer)
+        mergeSourceSets(resolvedSources, result.resolvedFrom)
+        if (result.dynamic) dynamicDetected = true
+        if (!result.values.length) {
+          if (result.dynamic) {
+            dynamicDetected = true
+          } else {
+            const message = `No se pudo resolver el valor de ${resourceKind} en ${call.name} (línea ${call.line ?? '?'})`
+            warn(message)
           }
-        }
-        if (!strings.length) {
-          warn(`No se pudo resolver ${resourceKind} adicional (${call.name} línea ${call.line})`)
           continue
         }
-        for (const value of strings) {
+        for (const value of result.values) {
           addResourceToEntity(entity, resourceKind, value)
           addResourceValue(addedResources, value)
+          anyResolved = true
         }
       }
 
-      if (!record.params) record.params = {}
-      record.params[resourceKind] = addedResources.values.slice()
+      record.resolvedValues[resourceKind] = addedResources.values.slice()
+      record.resolved = anyResolved
+      record.dynamic = dynamicDetected
+      if (!anyResolved) {
+        resolvedSources.add('fallback')
+      }
+      record.resolvedFrom = finalizeResolvedTags(resolvedSources)
 
       if (addedResources.values.length) {
         const displayName = formatEntityDisplayName(entity)
         const label = resourceKind === 'sounds' ? 'sonido' : (resourceKind === 'sprites' ? 'sprite' : 'modelo')
-        logSupplementalInfo(`Asociado ${label} adicional a ${entity.type} '${displayName}'.`)
+        logSupplementalInfo(`Asociado ${label} adicional a ${entity.type} '${displayName}'`)
       }
     }
 
@@ -965,6 +1021,15 @@ function applySupplementalCalls(calls, entities, context) {
     context.currentWarnings = null
   }
   context.currentWarnings = null
+}
+
+function normalizeSupplementalKind(handler) {
+  if (!handler) return 'unknown'
+  if (handler.kind === 'models') return 'model'
+  if (handler.kind === 'sounds') return 'sound'
+  if (handler.kind === 'sprites') return 'sprite'
+  if (handler.kind === 'stat') return handler.field || 'stat'
+  return handler.kind
 }
 
 function logSupplementalInfo(message) {
@@ -975,6 +1040,47 @@ function logSupplementalInfo(message) {
 function logSupplementalWarning(message) {
   if (!message) return
   console.warn(message)
+}
+
+function extractBlock(text, startIndex) {
+  if (!text || startIndex === undefined || startIndex === null || startIndex < 0) return null
+  let depth = 0
+  let inString = null
+  let escape = false
+  let contentStart = -1
+  for (let i = startIndex; i < text.length; i++) {
+    const ch = text[i]
+    if (inString) {
+      if (escape) {
+        escape = false
+      } else if (ch === '\\') {
+        escape = true
+      } else if (ch === inString) {
+        inString = null
+      }
+      continue
+    }
+    if (ch === '"' || ch === '\'') {
+      inString = ch
+      continue
+    }
+    if (ch === '{') {
+      depth++
+      if (depth === 1) {
+        contentStart = i + 1
+      }
+      continue
+    }
+    if (ch === '}') {
+      depth--
+      if (depth === 0) {
+        const body = contentStart >= 0 ? text.slice(contentStart, i) : ''
+        return { body, end: i + 1 }
+      }
+      continue
+    }
+  }
+  return null
 }
 
 function extractCall(text, startIndex) {
@@ -1095,15 +1201,17 @@ function splitStatements(text) {
 
 function extractIdentifier(text) {
   if (!text) return null
-  let cleaned = text.replace(/\b(?:new|static|stock|const|enum|Float|bool|char|String|Handle)\b/gi, ' ')
-  cleaned = cleaned.replace(/\b(?:Float|bool|char|String|Handle|any|Task|Array|_:)[A-Za-z0-9_]*:/g, ' ')
+  let cleaned = text.replace(/\b(?:new|static|stock|const|enum)\b/gi, ' ')
+  cleaned = cleaned.replace(/\b(?:Float|bool|char|String|Handle|any|Task|Array)\s*:/gi, ' ')
+  cleaned = cleaned.replace(/\b(?:Float|bool|char|String|Handle|any|Task|Array)\b/gi, ' ')
+  cleaned = cleaned.replace(/\b_:[A-Za-z0-9_]*:/g, ' ')
   cleaned = cleaned.replace(/\[[^\]]*\]/g, ' ')
   cleaned = cleaned.replace(/[*&]/g, ' ')
   const parts = cleaned.trim().split(/\s+/)
   return parts.length ? parts[parts.length - 1] : null
 }
 
-function setDefinition(map, entries, name, expr, source) {
+function setDefinition(map, entries, name, expr, source, arrays) {
   const entry = {
     name,
     expr: expr.trim(),
@@ -1115,6 +1223,9 @@ function setDefinition(map, entries, name, expr, source) {
   }
   map.set(name, entry)
   entries.push(entry)
+  if (entry.kind === 'array' && arrays instanceof Map) {
+    arrays.set(name, { name, expr: entry.expr, source })
+  }
 }
 
 function setAliasDefinition(map, entries, name, target) {
@@ -1296,6 +1407,256 @@ function flattenStringValues(value) {
   return []
 }
 
+function mergeSourceSets(target, source) {
+  if (!(target instanceof Set) || !source) return
+  if (source instanceof Set) {
+    for (const entry of source) {
+      if (!entry) continue
+      target.add(String(entry))
+    }
+    return
+  }
+  if (Array.isArray(source)) {
+    for (const entry of source) {
+      if (!entry) continue
+      target.add(String(entry))
+    }
+    return
+  }
+  if (typeof source === 'string') {
+    target.add(source)
+  }
+}
+
+function finalizeResolvedTags(set) {
+  if (!(set instanceof Set)) return []
+  const arr = []
+  for (const entry of set) {
+    if (!entry) continue
+    arr.push(String(entry))
+  }
+  return arr
+}
+
+function isQuotedStringLiteral(text) {
+  if (!text) return false
+  return (
+    (text.startsWith('"') && text.endsWith('"')) ||
+    (text.startsWith('\'') && text.endsWith('\''))
+  )
+}
+
+function parseNumericLiteral(text) {
+  if (!text) return undefined
+  if (/^[-+]?0x[0-9a-f]+$/i.test(text)) return parseInt(text, 16)
+  if (/^[-+]?\d+\.\d+(?:e[-+]?\d+)?$/i.test(text)) return parseFloat(text)
+  if (/^[-+]?\d+$/.test(text)) return parseInt(text, 10)
+  return undefined
+}
+
+function isKnownIdentifier(name, resolver, definitionContainer) {
+  if (!name) return false
+  if (HARDCODED_CONSTANTS[name] !== undefined) return true
+  if (resolver) {
+    if (resolver.variables && resolver.variables.has(name)) return true
+    const container = resolver.definitionContainer
+    if (container && container.definitions instanceof Map && container.definitions.has(name)) return true
+    if (container && container.arrays instanceof Map && container.arrays.has(name)) return true
+  }
+  if (definitionContainer) {
+    const defs = definitionContainer.definitions
+    if (defs instanceof Map && defs.has(name)) return true
+    const arrays = definitionContainer.arrays
+    if (arrays instanceof Map && arrays.has(name)) return true
+  }
+  return false
+}
+
+function expressionLooksDynamic(expr, resolver, definitionContainer) {
+  if (!expr || typeof expr !== 'string') return false
+  const trimmed = expr.trim()
+  if (!trimmed) return false
+
+  const callableMatch = trimmed.match(/([A-Za-z_]\w*)\s*\(/)
+  if (callableMatch) {
+    const fn = callableMatch[1]
+    const allowed = new Set(['float', 'Float', 'bool', 'Bool', '_:float', '_:Float', '_:bool', '_:Bool', 'view_as'])
+    if (!allowed.has(fn)) return true
+  }
+
+  if (/[\+\-*/%]/.test(trimmed) && /[A-Za-z_]/.test(trimmed)) {
+    const identifiers = trimmed.match(/[A-Za-z_]\w*/g) || []
+    for (const ident of identifiers) {
+      if (['new', 'sizeof', 'float', 'Float', 'bool', 'Bool', '_:float', '_:Float', '_:bool', '_:Bool', 'view_as'].includes(ident)) continue
+      if (HARDCODED_CONSTANTS[ident] !== undefined) continue
+      if (isKnownIdentifier(ident, resolver, definitionContainer)) continue
+      return true
+    }
+  }
+
+  if (trimmed.includes('%')) return true
+
+  if (trimmed.includes('[')) {
+    const baseMatch = trimmed.match(/([A-Za-z_]\w*)\s*(?=\[)/)
+    const baseName = baseMatch ? baseMatch[1] : null
+    if (baseName && !isKnownIdentifier(baseName, resolver, definitionContainer)) return true
+    const indexMatches = trimmed.match(/\[([^\]]+)\]/g) || []
+    for (const part of indexMatches) {
+      const inner = part.replace(/^[\[]|\]$/g, '')
+      if (!inner) continue
+      const identifiers = inner.match(/[A-Za-z_]\w*/g) || []
+      for (const ident of identifiers) {
+        if (isKnownIdentifier(ident, resolver, definitionContainer)) continue
+        if (HARDCODED_CONSTANTS[ident] !== undefined) continue
+        return true
+      }
+    }
+  }
+
+  return false
+}
+
+function resolveExpressionMeta(expr, resolver, contextKey, definitionContainer) {
+  const sources = new Set()
+  if (expr === undefined || expr === null) {
+    return { value: undefined, sources, dynamic: false }
+  }
+
+  if (typeof expr === 'string') {
+    const trimmed = expr.trim()
+    if (!trimmed) return { value: undefined, sources, dynamic: false }
+
+    if (isQuotedStringLiteral(trimmed)) {
+      return { value: parseStringLiteral(trimmed), sources: new Set(['literal']), dynamic: false }
+    }
+
+    const numericLiteral = parseNumericLiteral(trimmed)
+    if (numericLiteral !== undefined) {
+      return { value: numericLiteral, sources: new Set(['literal']), dynamic: false }
+    }
+
+    let dynamic = expressionLooksDynamic(trimmed, resolver, definitionContainer)
+
+    if (/^[A-Za-z_]\w*$/.test(trimmed)) {
+      if (resolver) {
+        const identValue = resolver.resolveIdentifier(trimmed, contextKey)
+        if (identValue !== undefined) {
+          const result = { value: identValue, sources: new Set(['symbolTable']), dynamic: false }
+          return result
+        }
+        if (!isKnownIdentifier(trimmed, resolver, definitionContainer)) {
+          return { value: undefined, sources, dynamic: true }
+        }
+      }
+    }
+
+    if (resolver) {
+      const resolved = resolver.resolveValue(trimmed, contextKey)
+      if (resolved !== undefined) {
+        const result = { value: resolved, sources: new Set(['symbolTable']), dynamic: false }
+        return result
+      }
+    }
+
+    const literal = resolveLiteralValue(trimmed, resolver, contextKey)
+    if (literal !== undefined) {
+      const result = { value: literal, sources: new Set(['literal']), dynamic: false }
+      return result
+    }
+
+    return { value: undefined, sources, dynamic }
+  }
+
+  if (resolver) {
+    const resolved = resolver.resolveValue(expr, contextKey)
+    if (resolved !== undefined) {
+      return { value: resolved, sources: new Set(['symbolTable']), dynamic: false }
+    }
+  }
+
+  return { value: undefined, sources, dynamic: false }
+}
+
+function resolveNumericMeta(expr, resolver, contextKey, definitionContainer) {
+  const base = resolveExpressionMeta(expr, resolver, contextKey, definitionContainer)
+  let numeric = toNumber(base.value)
+  if (numeric === undefined && base.value !== undefined) {
+    const literal = resolveLiteralValue(base.value, resolver, contextKey)
+    if (literal !== undefined) {
+      numeric = toNumber(literal)
+      if (numeric !== undefined) base.sources.add('literal')
+    }
+  }
+  const hadValue = base.value !== undefined
+  return { value: numeric, sources: base.sources, dynamic: base.dynamic, hadValue }
+}
+
+function collectStringsFromExpression(expr, resolver, contextKey, definitionContainer) {
+  const values = new Set()
+  const sources = new Set()
+  const meta = resolveExpressionMeta(expr, resolver, contextKey, definitionContainer)
+  mergeSourceSets(sources, meta.sources)
+  for (const str of flattenStringValues(meta.value)) {
+    if (typeof str === 'string' && str.trim().length) {
+      values.add(str.trim())
+    } else if (str === '') {
+      values.add('')
+    }
+  }
+
+  if (values.size === 0 && typeof expr === 'string') {
+    const trimmed = expr.trim()
+    if (isQuotedStringLiteral(trimmed)) {
+      const literal = parseStringLiteral(trimmed)
+      if (literal !== undefined) {
+        values.add(literal)
+        sources.add('literal')
+      }
+    }
+  }
+
+  if (values.size === 0) {
+    const identifier = extractIdentifier(expr)
+    if (identifier && resolver) {
+      const direct = resolver.resolveIdentifier(identifier, contextKey)
+      for (const str of flattenStringValues(direct)) {
+        if (typeof str === 'string' && str.trim().length) {
+          values.add(str.trim())
+          sources.add('symbolTable')
+        }
+      }
+    }
+
+    if (typeof expr === 'string' && expr.includes('[')) {
+      const baseMatch = expr.match(/([A-Za-z_]\w*)\s*(?=\[)/)
+      const baseName = baseMatch ? baseMatch[1] : identifier
+      if (baseName && resolver) {
+        const baseValues = resolver.resolveIdentifier(baseName, contextKey)
+        for (const str of flattenStringValues(baseValues)) {
+          if (typeof str === 'string' && str.trim().length) {
+            values.add(str.trim())
+            sources.add('symbolTable')
+          }
+        }
+      }
+      if (baseName && definitionContainer && definitionContainer.arrays instanceof Map) {
+        const arrEntry = definitionContainer.arrays.get(baseName)
+        if (arrEntry && typeof arrEntry.expr === 'string') {
+          const parsed = parseArrayLiteral(arrEntry.expr, resolver, contextKey)
+          for (const str of flattenStringValues(parsed)) {
+            if (typeof str === 'string' && str.trim().length) {
+              values.add(str.trim())
+              sources.add('symbolTable')
+            }
+          }
+        }
+      }
+    }
+  }
+
+  return { values: Array.from(values), resolvedFrom: finalizeResolvedTags(sources), dynamic: meta.dynamic }
+}
+
 function collectPrefixes(args) {
   const prefixes = new Set()
   for (const arg of args) {
@@ -1306,6 +1667,350 @@ function collectPrefixes(args) {
     prefixes.add(ident.toLowerCase())
   }
   return prefixes
+}
+
+function detectPseudoHumanClasses(filePath, rawText, context, versionInfo, fileBase, originFile) {
+  if (!filePath || !rawText) return []
+  const lower = path.basename(filePath).toLowerCase()
+  if (!/zp_hclass\.sma$/.test(lower)) return []
+
+  const resolver = context && context.resolver
+  const entities = []
+  const regex = /public\s+class_(\d+)\s*\(\s*([A-Za-z_]\w*)\s*\)\s*\{/gi
+  let match
+  while ((match = regex.exec(rawText)) !== null) {
+    const classIndex = parseInt(match[1], 10)
+    const openBraceIndex = rawText.indexOf('{', regex.lastIndex - 1)
+    if (openBraceIndex === -1) continue
+    const block = extractBlock(rawText, openBraceIndex)
+    if (!block) continue
+    const body = block.body || ''
+    const line = rawText.slice(0, match.index).split(/\r?\n/).length
+
+    const nameInfo = derivePseudoName(body)
+    const cleanName = nameInfo && nameInfo.value ? nameInfo.value : `Human Class ${classIndex}`
+    const normalizedName = normalizeName(cleanName)
+
+    const stats = { health: undefined, speed: undefined, gravity: undefined, armor: undefined }
+    const resolvedMeta = {}
+
+    const healthExpr = findPseudoCallArgument(body, /set_user_health\s*\(/i, 1)
+    const armorExpr = findPseudoCallArgument(body, /cs_set_user_armor\s*\(/i, 1)
+    const gravityExpr = findPseudoCallArgument(body, /set_user_gravity\s*\(/i, 1)
+
+    if (healthExpr) {
+      const numeric = resolvePseudoNumeric(healthExpr, resolver, 'human_class.health')
+      if (numeric !== undefined) {
+        stats.health = numeric
+        resolvedMeta.health = 'pseudo'
+      }
+    }
+    if (armorExpr) {
+      const numeric = resolvePseudoNumeric(armorExpr, resolver, 'human_class.armor')
+      if (numeric !== undefined) {
+        stats.armor = numeric
+        resolvedMeta.armor = 'pseudo'
+      }
+    }
+    if (gravityExpr) {
+      const numeric = resolvePseudoNumeric(gravityExpr, resolver, 'human_class.gravity')
+      if (numeric !== undefined) {
+        stats.gravity = numeric
+        resolvedMeta.gravity = 'pseudo'
+      }
+    }
+
+    const warningSet = new Set()
+    const entity = {
+      id: '',
+      type: 'human_class',
+      name: cleanName,
+      fileName: fileBase,
+      enabled: true,
+      source: 'scan',
+      stats,
+      paths: { models: [], sounds: [], sprites: [] },
+      meta: {
+        originFile,
+        originVersion: versionInfo.version,
+        originLabel: versionInfo.label,
+        originIsAddon: Boolean(versionInfo.isAddon),
+        originBaseVersion: versionInfo.baseVersion,
+        migrated: versionInfo.version !== 'zp_5_0_8a',
+        registerLine: line,
+        registerFunction: 'pseudo_class',
+        registerFunctionNormalized: 'pseudo_class',
+        registerVar: undefined,
+        displayNameToken: undefined,
+        warnings: warningSet,
+        transformations: [],
+        conflicts: [],
+        bundle: fileBase,
+        normalizedName,
+        extraCalls: [],
+        resolvedFrom: {},
+        source: 'pseudo',
+        pseudoIndex: classIndex,
+        pseudoNameSource: nameInfo ? nameInfo.source : undefined
+      },
+      _registerIndex: match.index,
+      _prefixes: new Set(),
+      _pathSets: createPathSets('human_class', { models: [], sounds: [], sprites: [] })
+    }
+
+    if (resolvedMeta && typeof resolvedMeta === 'object') {
+      for (const [field, tag] of Object.entries(resolvedMeta)) {
+        markResolvedFrom(entity.meta, field, tag)
+      }
+    }
+
+    entities.push(entity)
+  }
+
+  return entities
+}
+
+function findPseudoCallArgument(body, regex, position) {
+  if (!body || !regex) return null
+  regex.lastIndex = 0
+  const match = regex.exec(body)
+  if (!match) return null
+  const openIndex = body.indexOf('(', match.index)
+  if (openIndex === -1) return null
+  const call = extractCall(body, openIndex)
+  if (!call) return null
+  const args = parseArguments(call.args)
+  return args[position] !== undefined ? args[position] : null
+}
+
+function derivePseudoName(block) {
+  if (!block) return null
+  const chatRegex = /chat_color\s*\([^,]+,\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/i
+  const printRegex = /client_print\s*\([^,]+,\s*[^,]+,\s*("(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*')/i
+  let match = chatRegex.exec(block)
+  let source = 'chat_color'
+  if (!match) {
+    printRegex.lastIndex = 0
+    match = printRegex.exec(block)
+    source = 'print'
+  }
+  if (!match) return null
+  const raw = parseStringLiteral(match[1])
+  if (!raw) return null
+  let cleaned = raw.replace(/!./g, '').replace(/\^./g, '').replace(/\[[^\]]*\]/g, ' ').trim()
+  cleaned = cleaned.replace(/\s{2,}/g, ' ').trim()
+  const colon = cleaned.lastIndexOf(':')
+  if (colon !== -1) cleaned = cleaned.slice(colon + 1)
+  cleaned = cleaned.replace(/\(.*?\)/g, ' ').trim()
+  cleaned = cleaned.replace(/\s{2,}/g, ' ').trim()
+  if (!cleaned) return null
+  return { value: cleaned, source }
+}
+
+function resolvePseudoNumeric(expr, resolver, contextKey) {
+  if (!expr) return undefined
+  let value = resolver ? resolver.resolveValue(expr, contextKey) : undefined
+  let numeric = toNumber(value)
+  if (numeric !== undefined) return numeric
+  const literal = resolveLiteralValue(expr, resolver, contextKey)
+  if (literal !== undefined) {
+    numeric = toNumber(literal)
+    if (numeric !== undefined) return numeric
+  }
+  return undefined
+}
+
+function detectMenuArrayEntities(filePath, rawText, context, versionInfo, fileBase, originFile) {
+  const definitionContainer = context && context.definitions
+  const arrayDefs = definitionContainer && definitionContainer.arrays
+  if (!arrayDefs || !(arrayDefs instanceof Map) || !arrayDefs.size) return []
+
+  const lowerFile = path.basename(filePath).toLowerCase()
+  if (!/(menu|admin|extra|array)/.test(lowerFile)) return []
+
+  const resolver = context && context.resolver
+  const groups = new Map()
+  for (const [rawName, entry] of arrayDefs.entries()) {
+    if (!rawName || !entry || typeof entry.expr !== 'string') continue
+    const lowerName = rawName.toLowerCase()
+    const suffixMatch = lowerName.match(/_(name|names|model|models|clawmodel|clawmodels|sound|sounds|sprite|sprites|info|desc|description|health|hp|speed|gravity|knockback|armor|cost|team|unlimited)$/)
+    if (!suffixMatch) continue
+    const suffix = suffixMatch[1]
+    const baseKey = lowerName.slice(0, lowerName.length - suffix.length - 1)
+    if (!baseKey) continue
+    let values
+    try {
+      values = parseArrayLiteral(entry.expr, resolver, 'menu.array')
+    } catch (err) {
+      values = []
+    }
+    if (!values || !Array.isArray(values) || !values.length) continue
+    let group = groups.get(baseKey)
+    if (!group) {
+      group = { key: baseKey, suffixes: new Map(), rawNames: new Map() }
+      groups.set(baseKey, group)
+    }
+    group.suffixes.set(suffix, values)
+    group.rawNames.set(suffix, rawName)
+  }
+
+  const entities = []
+  for (const group of groups.values()) {
+    const type = inferMenuEntityType(group.key)
+    if (!type) continue
+    const lengths = []
+    for (const values of group.suffixes.values()) {
+      if (Array.isArray(values)) lengths.push(values.length)
+    }
+    const length = lengths.length ? Math.max(...lengths) : 0
+    if (!length) continue
+
+    const nameValues = group.suffixes.get('name') || group.suffixes.get('names')
+    if (!Array.isArray(nameValues) || !nameValues.length) continue
+
+    const line = computeMenuArrayLine(rawText, group.rawNames.get('name') || group.rawNames.get('names'))
+
+    for (let index = 0; index < length; index++) {
+      const name = extractMenuString(nameValues, index)
+      if (!name) continue
+      const description = extractMenuString(group.suffixes.get('info') || group.suffixes.get('desc') || group.suffixes.get('description'), index)
+
+      const normalizedName = normalizeName(name)
+      const stats = {}
+      for (const field of TYPE_STAT_FIELDS[type] || []) stats[field] = undefined
+
+      const entity = {
+        id: '',
+        type,
+        name,
+        fileName: fileBase,
+        enabled: true,
+        source: 'scan',
+        description: description || undefined,
+        stats,
+        paths: { models: [], sounds: [], sprites: [] },
+        meta: {
+          originFile,
+          originVersion: versionInfo.version,
+          originLabel: versionInfo.label,
+          originIsAddon: Boolean(versionInfo.isAddon),
+          originBaseVersion: versionInfo.baseVersion,
+          migrated: versionInfo.version !== 'zp_5_0_8a',
+          registerLine: line,
+          registerFunction: 'menu_array',
+          registerFunctionNormalized: 'menu_array',
+          registerVar: undefined,
+          displayNameToken: undefined,
+          warnings: new Set(),
+          transformations: [],
+          conflicts: [],
+          bundle: fileBase,
+          normalizedName,
+          extraCalls: [],
+          resolvedFrom: {},
+          source: 'menu-array',
+          menuBase: group.key,
+          menuIndex: index
+        },
+        _registerIndex: line !== undefined ? line : rawText.length,
+        _prefixes: new Set(normalizedName ? [normalizedName.toLowerCase()] : []),
+        _pathSets: createPathSets(type, { models: [], sounds: [], sprites: [] })
+      }
+
+      applyMenuStatValue(entity, group, index, type)
+      applyMenuResources(entity, group, index)
+
+      entities.push(entity)
+    }
+  }
+
+  return entities
+}
+
+function inferMenuEntityType(baseKey) {
+  if (!baseKey) return null
+  const lower = baseKey.toLowerCase()
+  if (lower.includes('mode')) return 'mode'
+  if (lower.includes('item') || lower.includes('extra')) return 'shop_item'
+  if (lower.includes('hclass') || lower.includes('humanclass')) {
+    if (lower.includes('special')) return 'special_human_class'
+    return 'human_class'
+  }
+  if (lower.includes('zclass') || lower.includes('zombieclass')) {
+    if (lower.includes('special')) return 'special_zombie_class'
+    return 'zombie_class'
+  }
+  return null
+}
+
+function computeMenuArrayLine(rawText, rawName) {
+  if (!rawText || !rawName) return undefined
+  const idx = rawText.toLowerCase().indexOf(String(rawName).toLowerCase())
+  if (idx === -1) return undefined
+  return rawText.slice(0, idx).split(/\r?\n/).length
+}
+
+function extractMenuString(values, index) {
+  if (!values || index === undefined || index === null) return null
+  const value = Array.isArray(values) ? values[index] : undefined
+  const strings = flattenStringValues(value)
+  if (!strings.length) return null
+  const candidate = strings.find(str => typeof str === 'string' && str.trim().length)
+  return candidate ? candidate.trim() : null
+}
+
+function applyMenuStatValue(entity, group, index, type) {
+  if (!entity || !group) return
+  const statFields = TYPE_STAT_FIELDS[type] || []
+  const mapping = {
+    health: ['health', 'hp'],
+    speed: ['speed'],
+    gravity: ['gravity'],
+    knockback: ['knockback'],
+    armor: ['armor'],
+    cost: ['cost'],
+    team: ['team'],
+    unlimited: ['unlimited']
+  }
+  for (const field of statFields) {
+    const aliases = mapping[field]
+    if (!aliases) continue
+    for (const alias of aliases) {
+      const values = group.suffixes.get(alias)
+      if (!values || !Array.isArray(values)) continue
+      if (index >= values.length) continue
+      const rawValue = values[index]
+      const numeric = toNumber(rawValue)
+      if (numeric !== undefined) {
+        entity.stats[field] = numeric
+        markResolvedFrom(entity.meta, field, 'array')
+        break
+      }
+    }
+  }
+}
+
+function applyMenuResources(entity, group, index) {
+  if (!entity || !group) return
+  const modelValues = group.suffixes.get('model') || group.suffixes.get('models')
+  const clawValues = group.suffixes.get('clawmodel') || group.suffixes.get('clawmodels')
+  const soundValues = group.suffixes.get('sound') || group.suffixes.get('sounds')
+  const spriteValues = group.suffixes.get('sprite') || group.suffixes.get('sprites')
+
+  const pushResources = (values, kind) => {
+    if (!values || !Array.isArray(values) || index >= values.length) return
+    const entry = values[index]
+    const strings = flattenStringValues(entry)
+    for (const str of strings) {
+      addResourceToEntity(entity, kind, str)
+      markResolvedFrom(entity.meta, kind, 'array')
+    }
+  }
+
+  pushResources(modelValues, 'models')
+  pushResources(clawValues, 'models')
+  pushResources(soundValues, 'sounds')
+  pushResources(spriteValues, 'sprites')
 }
 
 function normalizeLookupKey(value) {
@@ -1558,10 +2263,10 @@ function collectPathsFromArgs(call, type, context) {
   const sounds = createResourceCollector()
   const sprites = createResourceCollector()
   const resolver = context && context.resolver
+  const definitionContainer = context && context.definitions
   for (const arg of call.args) {
-    const value = resolver ? resolver.resolveValue(arg, 'paths') : undefined
-    const strings = flattenStringValues(value)
-    for (const s of strings) {
+    const result = collectStringsFromExpression(arg, resolver, 'paths', definitionContainer)
+    for (const s of result.values) {
       categorizeResourcePath(type, s, models, sounds, sprites)
     }
   }
@@ -1713,78 +2418,84 @@ function extractStatsForEntity(call, type, context, prefixes) {
   const stats = {}
   const resolvedMeta = {}
   const fields = TYPE_STAT_FIELDS[type] || []
-  for (const field of fields) stats[field] = undefined
-
   const positional = TYPE_FIELD_POSITIONS[type] || {}
   const definitionEntries = context.definitions.entries
   const resolver = context.resolver
   const warn = context.warn
-  const defaultsForType = ZP508a_DEFAULTS[type] || {}
+  const definitionContainer = context.definitions
 
   for (const field of fields) {
     const keywords = STAT_KEYWORDS[field] || [field]
     const contextKey = `${type}.${field}`
-    let resolved
-    let positionalArgValue
+    const sources = new Set()
+    let resolvedValue
+    let hasResolution = false
+    let dynamicDetected = false
+    let attempted = false
+
+    const considerExpression = (expr) => {
+      if (expr === undefined) return false
+      attempted = true
+      const info = resolveNumericMeta(expr, resolver, contextKey, definitionContainer)
+      if (info.value !== undefined) {
+        resolvedValue = info.value
+        hasResolution = true
+        mergeSourceSets(sources, info.sources)
+        return true
+      }
+      if (info.dynamic) dynamicDetected = true
+      if (info.hadValue) mergeSourceSets(sources, info.sources)
+      return false
+    }
 
     const positionIndex = positional[field]
     if (positionIndex !== undefined) {
-      positionalArgValue = call.args[positionIndex]
-      if (positionalArgValue !== undefined) {
-        resolved = resolver ? resolver.resolveValue(positionalArgValue, contextKey) : positionalArgValue
-      }
+      considerExpression(call.args[positionIndex])
     }
 
-    if (resolved === undefined && positionalArgValue !== undefined) {
-      const literal = resolveLiteralValue(positionalArgValue, resolver, contextKey)
-      if (literal !== undefined) resolved = literal
-    }
-
-    if (resolved === undefined) {
+    if (!hasResolution) {
       for (const arg of call.args) {
         const ident = extractIdentifier(arg)
         if (!ident) continue
         const tokens = identifierTokens(ident)
         if (tokens.some(t => keywords.includes(t))) {
-          resolved = resolver ? resolver.resolveValue(arg, contextKey) : undefined
-          if (resolved === undefined) {
-            const literal = resolveLiteralValue(arg, resolver, contextKey)
-            if (literal !== undefined) resolved = literal
-          }
-          if (resolved !== undefined) break
+          if (considerExpression(arg)) break
         }
       }
     }
 
-    if (resolved === undefined) {
-      resolved = findValueInDefinitions(definitionEntries, keywords, prefixes, context)
-    }
-
-    if (resolved === undefined && defaultsForType[field] === undefined && warn) {
-      warn(`No se pudo resolver el valor de ${field} en ${call.name} (línea ${call.line})`)
-    }
-
-    let numeric = toNumber(resolved)
-    if (numeric === undefined && resolved !== undefined) {
-      const literal = resolveLiteralValue(resolved, resolver, contextKey)
-      if (literal !== undefined) {
-        resolved = literal
-        numeric = toNumber(literal)
+    if (!hasResolution) {
+      const definitionValue = findValueInDefinitions(definitionEntries, keywords, prefixes, context)
+      if (definitionValue !== undefined) {
+        attempted = true
+        const numeric = toNumber(definitionValue)
+        if (numeric !== undefined) {
+          resolvedValue = numeric
+          hasResolution = true
+        }
+        sources.add('symbolTable')
       }
     }
 
+    let finalValue
     let fallbackUsed = false
-    if (numeric === undefined && resolved !== undefined) {
-      numeric = 0
+    if (hasResolution) {
+      finalValue = resolvedValue
+    } else {
+      if (attempted && !dynamicDetected && warn) {
+        warn(`No se pudo resolver el valor de ${field} en ${call.name} (línea ${call.line})`)
+      }
+      finalValue = 0
       fallbackUsed = true
     }
 
-    if (numeric !== undefined) {
-      stats[field] = numeric
-      if (fallbackUsed) {
-        if (!resolvedMeta[field]) resolvedMeta[field] = new Set()
-        resolvedMeta[field].add('fallback')
-      }
+    stats[field] = finalValue
+    if (fallbackUsed || sources.size) {
+      let metaSet = resolvedMeta[field]
+      if (!(metaSet instanceof Set)) metaSet = new Set()
+      mergeSourceSets(metaSet, sources)
+      if (fallbackUsed) metaSet.add('fallback')
+      if (metaSet.size) resolvedMeta[field] = metaSet
     }
   }
 
@@ -1916,9 +2627,11 @@ function normalizePath(p) {
   }
   str = str.trim()
   if (!str) return null
-  str = str.replace(/\\/g, '/').replace(/\/{2,}/g, '/').trim()
-  if (!str) return null
-  return str
+  const lowered = str.toLowerCase()
+  const normalized = path.normalize(lowered).replace(/\\/g, '/').replace(/\/{2,}/g, '/')
+  const cleaned = normalized.trim()
+  if (!cleaned) return null
+  return cleaned
 }
 
 module.exports = {

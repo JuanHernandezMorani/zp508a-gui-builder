@@ -10,7 +10,8 @@
     "dev:electron": "wait-on tcp:5173 && electron .",
     "build": "vite build && electron-builder",
     "start": "electron .",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "smoke": "node scripts/smoke-parse.js"
   },
   "dependencies": {
     "electron-store": "^8.1.0",

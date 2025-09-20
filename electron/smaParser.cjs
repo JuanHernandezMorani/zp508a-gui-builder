@@ -195,44 +195,23 @@ const RESOURCE_EXTENSIONS = {
 const CLASS_TYPES = new Set(['zombie_class', 'human_class', 'special_zombie_class', 'special_human_class'])
 const CLASS_RESOURCE_KINDS = new Set(['models', 'claws', 'sounds', 'sprites'])
 
-const SPECIAL_HUMAN_NAMES = new Set(['survivor', 'sniper'])
-const SPECIAL_ZOMBIE_NAMES = new Set(['nemesis', 'assassin'])
+const SPECIAL_HUMAN_NAMES = ['survivor', 'sniper']
+const SPECIAL_ZOMBIE_NAMES = ['nemesis', 'assassin']
 
-const ABILITY_DETECTION_PATTERNS = [
-  { effect: 'heal', re: /set_user_health\s*\(\s*id\s*,\s*([0-9]+)\s*\)/gi },
-  { effect: 'armor_boost', re: /(cs_)?set_user_armor\s*\(\s*id\s*,\s*([0-9]+)\s*\)/gi },
-  { effect: 'speed_boost', re: /set_user_maxspeed\s*\(\s*id\s*,\s*([0-9.]+)\s*\)/gi },
-  { effect: 'low_gravity', re: /set_user_gravity\s*\(\s*id\s*,\s*([0-9.]+)\s*\)/gi },
-  { effect: 'invisibility', re: /set_user_rendering\s*\(\s*id\s*,/gi }
-]
+function isAllowedWarningMessage(message) {
+  if (!message) return false
+  const text = String(message)
+  if (/^No se encontró entidad base para /i.test(text)) return true
+  if (/No se pudo resolver el valor de unlimited/i.test(text)) return true
+  return false
+}
 
 function maybeForceSpecialTypeByName(entity) {
   if (!entity) return
   const n = (entity.name || '').toLowerCase().trim()
   if (!n) return
-  if (SPECIAL_HUMAN_NAMES.has(n)) entity.type = 'special_human_class'
-  if (SPECIAL_ZOMBIE_NAMES.has(n)) entity.type = 'special_zombie_class'
-}
-
-function detectAbilitiesInEntity(rawText, entity) {
-  if (!rawText || !entity || !entity.meta) return
-  if (!Array.isArray(entity.meta.extraCalls)) entity.meta.extraCalls = []
-  for (const { effect, re } of ABILITY_DETECTION_PATTERNS) {
-    if (!re || typeof re.exec !== 'function') continue
-    re.lastIndex = 0
-    let match
-    while ((match = re.exec(rawText)) !== null) {
-      const line = rawText.slice(0, match.index).split(/\r?\n/).length
-      const fn = (match[0].split('(')[0] || '').trim()
-      entity.meta.extraCalls.push({
-        type: 'abilityDetected',
-        fn,
-        args: match.slice(1),
-        effect,
-        line
-      })
-    }
-  }
+  if (SPECIAL_HUMAN_NAMES.some(w => n.includes(w))) entity.type = 'special_human_class'
+  if (SPECIAL_ZOMBIE_NAMES.some(w => n.includes(w))) entity.type = 'special_zombie_class'
 }
 
 const HARDCODED_CONSTANTS = {
@@ -359,6 +338,7 @@ function parseSMAEntities(filePath, rawText) {
   const warn = (message) => {
     if (!message) return
     const text = String(message)
+    if (!isAllowedWarningMessage(text)) return
     fileWarnings.add(text)
     if (context.currentWarnings) context.currentWarnings.add(text)
     else globalWarnings.add(text)
@@ -505,16 +485,18 @@ function parseSMAEntities(filePath, rawText) {
     orderedEntities.push(menuEntity)
   }
 
-  for (const entity of orderedEntities) {
-    detectAbilitiesInEntity(rawText, entity)
-  }
-
   if (!orderedEntities.length && /zp_register_(?:zombie|human|extra|weapon|gamemode)/i.test(rawText)) {
     warn('No se pudieron extraer entidades a pesar de encontrar llamadas de registro.')
   }
 
   const supplementalCalls = findSupplementalCalls(rawText)
   applySupplementalCalls(supplementalCalls, orderedEntities, context)
+
+  detectSpecialPluginMarkers(rawText, orderedEntities)
+
+  for (const entity of orderedEntities) {
+    detectAbilities(rawText, entity)
+  }
 
   assignResourcesToEntities(orderedEntities, resources)
 
@@ -1036,7 +1018,7 @@ function applySupplementalCalls(calls, entities, context) {
           }
         }
       }
-      record.dynamic = Boolean(info.dynamic)
+      record.dynamic = Boolean(info.dynamic || !record.resolved)
       record.resolvedFrom = finalizeResolvedTags(resolvedSources)
     } else if (
       handler.kind === 'models' ||
@@ -1066,7 +1048,7 @@ function applySupplementalCalls(calls, entities, context) {
 
       record.resolvedValues[resourceKind] = addedResources.values.slice()
       record.resolved = anyResolved
-      record.dynamic = dynamicDetected
+      record.dynamic = Boolean(dynamicDetected || !anyResolved)
       record.resolvedFrom = finalizeResolvedTags(resolvedSources)
 
       if (addedResources.values.length) {
@@ -1083,6 +1065,95 @@ function applySupplementalCalls(calls, entities, context) {
     context.currentWarnings = null
   }
   context.currentWarnings = null
+}
+
+function detectSpecialPluginMarkers(rawText, entities) {
+  if (typeof rawText !== 'string' || !Array.isArray(entities)) return
+
+  const SPECIAL_PLUGIN_MARKERS = [
+    { re: /\[ZP\]\s*Class:\s*Nemesis/i, type: 'special_zombie_class', name: 'Nemesis' },
+    { re: /\[ZP\]\s*Class:\s*Assassin/i, type: 'special_zombie_class', name: 'Assassin' },
+    { re: /\[ZP\]\s*Class:\s*Survivor/i, type: 'special_human_class', name: 'Survivor' },
+    { re: /\[ZP\]\s*Class:\s*Sniper/i, type: 'special_human_class', name: 'Sniper' }
+  ]
+
+  for (const marker of SPECIAL_PLUGIN_MARKERS) {
+    if (!marker.re.test(rawText)) continue
+    const already = entities.find(
+      (e) =>
+        e &&
+        e.type === marker.type &&
+        typeof e.name === 'string' &&
+        e.name.toLowerCase() === marker.name.toLowerCase()
+    )
+    if (already) continue
+
+    const base = entities.find(
+      (candidate) => candidate && candidate.meta && candidate.meta.source !== 'plugin_marker'
+    )
+    const baseMeta = (base && base.meta) || {}
+    const fallbackLabel = VERSION_INFO.zp_5_0_8a.label
+    const entity = {
+      id: '',
+      type: marker.type,
+      name: marker.name,
+      fileName: base ? base.fileName : 'plugin_marker',
+      enabled: true,
+      source: 'plugin_marker',
+      stats: {},
+      paths: { models: [], claws: [], sounds: [], sprites: [] },
+      abilities: [],
+      meta: {
+        originFile: baseMeta.originFile || base?.fileName || 'plugin_marker',
+        originVersion: baseMeta.originVersion || 'zp_5_0_8a',
+        originLabel: baseMeta.originLabel || fallbackLabel,
+        originIsAddon: Boolean(baseMeta.originIsAddon),
+        originBaseVersion: baseMeta.originBaseVersion || baseMeta.originVersion || 'zp_5_0_8a',
+        migrated: Boolean(baseMeta.migrated),
+        origin: 'zp_5_0_plugin',
+        source: 'plugin_marker',
+        warnings: new Set(),
+        transformations: [],
+        conflicts: [],
+        bundle: baseMeta.bundle || base?.fileName || 'plugin_marker',
+        normalizedName: normalizeName(marker.name),
+        extraCalls: [],
+        resolvedFrom: ['plugin_marker']
+      }
+    }
+
+    maybeForceSpecialTypeByName(entity)
+    ensureDefaultTracker(entity)
+    entities.push(entity)
+  }
+}
+
+function detectAbilities(rawText, entity) {
+  if (!rawText || !entity || !entity.meta) return
+  if (!Array.isArray(entity.meta.extraCalls)) entity.meta.extraCalls = []
+
+  const effects = [
+    { effect: 'heal', re: /set_user_health\s*\(\s*id\s*,\s*([0-9]+)/gi },
+    { effect: 'armor_boost', re: /(cs_)?set_user_armor\s*\(\s*id\s*,\s*([0-9]+)/gi },
+    { effect: 'speed_boost', re: /set_user_maxspeed\s*\(\s*id\s*,\s*([0-9.]+)/gi },
+    { effect: 'low_gravity', re: /set_user_gravity\s*\(\s*id\s*,\s*([0-9.]+)/gi },
+    { effect: 'invisibility', re: /set_user_rendering\s*\(\s*id\s*,/gi }
+  ]
+
+  for (const { effect, re } of effects) {
+    if (!re || typeof re.exec !== 'function') continue
+    re.lastIndex = 0
+    let m
+    while ((m = re.exec(rawText)) !== null) {
+      entity.meta.extraCalls.push({
+        type: 'abilityDetected',
+        fn: (m[0].split('(')[0] || '').trim(),
+        args: m.slice(1),
+        effect,
+        line: rawText.slice(0, m.index).split(/\r?\n/).length
+      })
+    }
+  }
 }
 
 function normalizeSupplementalKind(handler) {
@@ -2369,10 +2440,10 @@ function addResourceValue(collector, value) {
   if (!collector) return
   const normalized = normalizePath(value)
   if (!normalized) return
-  const key = normalized.toLowerCase()
-  if (collector.seen.has(key)) return
+  const key = normalizeResPath(normalized)
+  if (!key || collector.seen.has(key)) return
   collector.seen.add(key)
-  collector.values.push(normalized)
+  collector.values.push(key)
 }
 
 function assignResourcesToEntities(entities, resources) {
@@ -2476,8 +2547,7 @@ function addResourceToEntity(entity, kind, value) {
 }
 
 function normalizeResPath(p) {
-  const normalized = normalizePath(p)
-  return normalized ? normalized.trim().toLowerCase() : ''
+  return String(p || '').replace(/\\/g, '/').trim().toLowerCase()
 }
 
 function dedupeList(arr) {

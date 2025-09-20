@@ -14,7 +14,7 @@ interface EditModalProps {
   onSave: (item: ZPItem) => void
 }
 
-const CLASS_TYPES = new Set(['human_class', 'zombie_class', 'human_special', 'zombie_special'])
+const CLASS_TYPES = new Set(['human_class', 'zombie_class', 'special_human_class', 'special_zombie_class'])
 
 function asStringArray(value: unknown): string[] {
   if (Array.isArray(value)) return value.map((entry) => String(entry))
@@ -107,7 +107,7 @@ export default function EditModal({ item, onClose, onSave }: EditModalProps) {
   const renderSpecificFields = () => {
     switch (draft.type) {
       case 'zombie_class':
-      case 'zombie_special': {
+      case 'special_zombie_class': {
         const zStats = draft.stats as ZombieStats
         return (
           <>
@@ -157,7 +157,7 @@ export default function EditModal({ item, onClose, onSave }: EditModalProps) {
         )
       }
       case 'human_class':
-      case 'human_special': {
+      case 'special_human_class': {
         const hStats = draft.stats as HumanStats
         return (
           <>
@@ -381,8 +381,8 @@ export default function EditModal({ item, onClose, onSave }: EditModalProps) {
             <select value={draft.type} onChange={(e) => handleTypeChange(e.target.value as ZPItem['type'])}>
               <option value="human_class">Human Class</option>
               <option value="zombie_class">Zombie Class</option>
-              <option value="human_special">Human Special</option>
-              <option value="zombie_special">Zombie Special</option>
+              <option value="special_human_class">Human Special</option>
+              <option value="special_zombie_class">Zombie Special</option>
               <option value="mode">Mode</option>
               <option value="weapon">Weapon</option>
               <option value="shop_item">Shop Item</option>

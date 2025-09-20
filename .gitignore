@@ -17,3 +17,4 @@ dataset.csv
 dataset.parquet
 *.csv
 *.parquet
+results/

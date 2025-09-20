@@ -34,6 +34,7 @@ const REGISTER_FUNCTION_ALIASES = [
   { names: ['zp_register_human_special_class'], normalized: 'zp_register_human_special_class', type: 'special_human_class', origin: 'zp_5_0_8a' },
   { names: ['zp_register_extra_item'], normalized: 'zp_register_extra_item', type: 'shop_item', origin: 'zp_5_0_8a' },
   { names: ['zp_register_item'], normalized: 'zp_register_extra_item', type: 'shop_item', origin: 'zp_5_0_8a' },
+  { names: ['zp_items_register'], normalized: 'zp_items_register', type: 'shop_item', origin: 'external_addon' },
   { names: ['zp_weapon_register'], normalized: 'zp_weapon_register', type: 'weapon', origin: 'zp_5_0_8a' },
   { names: ['zp_register_gamemode'], normalized: 'zp_register_gamemode', type: 'mode', origin: 'zp_5_0_8a' },
   { names: ['zp_register_mode'], normalized: 'zp_register_gamemode', type: 'mode', origin: 'zp_4_3', legacy: true }
@@ -69,7 +70,7 @@ const SUPPLEMENTAL_ALIAS_ENTRIES = [
   },
   {
     names: ['zp_class_zombie_register_claw', 'zp_register_zombie_class_claw'],
-    handler: { kind: 'models', allowedTypes: ['zombie_class', 'special_zombie_class'] }
+    handler: { kind: 'claws', allowedTypes: ['zombie_class', 'special_zombie_class'] }
   },
   {
     names: ['zp_class_zombie_register_sound', 'zp_register_zombie_class_sound'],
@@ -193,6 +194,46 @@ const RESOURCE_EXTENSIONS = {
 
 const CLASS_TYPES = new Set(['zombie_class', 'human_class', 'special_zombie_class', 'special_human_class'])
 const CLASS_RESOURCE_KINDS = new Set(['models', 'claws', 'sounds', 'sprites'])
+
+const SPECIAL_HUMAN_NAMES = new Set(['survivor', 'sniper'])
+const SPECIAL_ZOMBIE_NAMES = new Set(['nemesis', 'assassin'])
+
+const ABILITY_DETECTION_PATTERNS = [
+  { effect: 'heal', re: /set_user_health\s*\(\s*id\s*,\s*([0-9]+)\s*\)/gi },
+  { effect: 'armor_boost', re: /(cs_)?set_user_armor\s*\(\s*id\s*,\s*([0-9]+)\s*\)/gi },
+  { effect: 'speed_boost', re: /set_user_maxspeed\s*\(\s*id\s*,\s*([0-9.]+)\s*\)/gi },
+  { effect: 'low_gravity', re: /set_user_gravity\s*\(\s*id\s*,\s*([0-9.]+)\s*\)/gi },
+  { effect: 'invisibility', re: /set_user_rendering\s*\(\s*id\s*,/gi }
+]
+
+function maybeForceSpecialTypeByName(entity) {
+  if (!entity) return
+  const n = (entity.name || '').toLowerCase().trim()
+  if (!n) return
+  if (SPECIAL_HUMAN_NAMES.has(n)) entity.type = 'special_human_class'
+  if (SPECIAL_ZOMBIE_NAMES.has(n)) entity.type = 'special_zombie_class'
+}
+
+function detectAbilitiesInEntity(rawText, entity) {
+  if (!rawText || !entity || !entity.meta) return
+  if (!Array.isArray(entity.meta.extraCalls)) entity.meta.extraCalls = []
+  for (const { effect, re } of ABILITY_DETECTION_PATTERNS) {
+    if (!re || typeof re.exec !== 'function') continue
+    re.lastIndex = 0
+    let match
+    while ((match = re.exec(rawText)) !== null) {
+      const line = rawText.slice(0, match.index).split(/\r?\n/).length
+      const fn = (match[0].split('(')[0] || '').trim()
+      entity.meta.extraCalls.push({
+        type: 'abilityDetected',
+        fn,
+        args: match.slice(1),
+        effect,
+        line
+      })
+    }
+  }
+}
 
 const HARDCODED_CONSTANTS = {
   humanclass1_name: 'Classic Human',
@@ -370,10 +411,18 @@ function parseSMAEntities(filePath, rawText) {
     context.currentWarnings = callWarnings
 
     const nameInfo = resolveEntityName(call, context, fileBase)
-    const rawName = nameInfo.value || call.assignedVar || fileBase
-    const cleanName = typeof rawName === 'string' ? rawName.trim() : String(rawName || '')
+    let rawName = nameInfo.value || call.assignedVar || fileBase
+    let cleanName = typeof rawName === 'string' ? rawName.trim() : String(rawName || '')
+    const statsResult = extractStatsForEntity(call, mapping, context, prefixes)
+    const { stats, resolvedFrom, overrides } = statsResult
+    if (overrides && overrides.name) {
+      const trimmedOverride = String(overrides.name).trim()
+      if (trimmedOverride && (!nameInfo.resolved || !cleanName)) {
+        cleanName = trimmedOverride
+        rawName = trimmedOverride
+      }
+    }
     const normalizedName = normalizeName(cleanName)
-    const { stats, resolvedFrom } = extractStatsForEntity(call, mapping.type, context, prefixes)
     const initialPaths = collectPathsFromArgs(call, mapping.type, context)
     const pathSets = createPathSets(mapping.type, initialPaths)
 
@@ -412,6 +461,8 @@ function parseSMAEntities(filePath, rawText) {
       _pathSets: pathSets
     }
 
+    maybeForceSpecialTypeByName(entity)
+
     if (resolvedFrom && typeof resolvedFrom === 'object') {
       for (const [field, set] of Object.entries(resolvedFrom)) {
         if (!(set instanceof Set)) continue
@@ -436,6 +487,7 @@ function parseSMAEntities(filePath, rawText) {
 
   const pseudoEntities = detectPseudoHumanClasses(filePath, rawText, context, versionInfo, fileBase, originFile)
   for (const pseudo of pseudoEntities) {
+    maybeForceSpecialTypeByName(pseudo)
     ensureDefaultTracker(pseudo)
     gatherEntityLookupKeys(pseudo, null, context)
     registerEntityLookup(entityRegistry, pseudo, null)
@@ -445,11 +497,16 @@ function parseSMAEntities(filePath, rawText) {
 
   const menuEntities = detectMenuArrayEntities(filePath, rawText, context, versionInfo, fileBase, originFile)
   for (const menuEntity of menuEntities) {
+    maybeForceSpecialTypeByName(menuEntity)
     ensureDefaultTracker(menuEntity)
     gatherEntityLookupKeys(menuEntity, null, context)
     registerEntityLookup(entityRegistry, menuEntity, null)
     registerEntityConflict(conflictTracker, menuEntity, context, null)
     orderedEntities.push(menuEntity)
+  }
+
+  for (const entity of orderedEntities) {
+    detectAbilitiesInEntity(rawText, entity)
   }
 
   if (!orderedEntities.length && /zp_register_(?:zombie|human|extra|weapon|gamemode)/i.test(rawText)) {
@@ -958,10 +1015,6 @@ function applySupplementalCalls(calls, entities, context) {
         const displayName = formatEntityDisplayName(entity)
         logSupplementalInfo(`Asociado ${handler.field} adicional a ${entity.type} '${displayName}'`)
       } else {
-        if (!info.dynamic) {
-          const message = `No se pudo resolver el valor de ${handler.field} en ${call.name} (línea ${call.line ?? '?'})`
-          warn(message)
-        }
         let fallback = entity.stats && entity.stats[handler.field] !== undefined
           ? entity.stats[handler.field]
           : defaultsForType[handler.field]
@@ -971,10 +1024,26 @@ function applySupplementalCalls(calls, entities, context) {
         record.resolved = false
         resolvedSources.add('fallback')
         markResolvedFrom(entity.meta, handler.field, 'fallback')
+        if (!info.dynamic) {
+          const normalizedRegister = entity.meta && entity.meta.registerFunctionNormalized
+          if (
+            handler.field === 'unlimited' &&
+            entity.type === 'shop_item' &&
+            normalizedRegister === 'zp_register_extra_item'
+          ) {
+            const message = `No se pudo resolver el valor de ${handler.field} en ${call.name} (línea ${call.line ?? '?'})`
+            warn(message)
+          }
+        }
       }
       record.dynamic = Boolean(info.dynamic)
       record.resolvedFrom = finalizeResolvedTags(resolvedSources)
-    } else if (handler.kind === 'models' || handler.kind === 'sounds' || handler.kind === 'sprites') {
+    } else if (
+      handler.kind === 'models' ||
+      handler.kind === 'claws' ||
+      handler.kind === 'sounds' ||
+      handler.kind === 'sprites'
+    ) {
       const resourceKind = handler.kind
       const addedResources = createResourceCollector()
       const indices = Array.isArray(handler.resourceArgs) && handler.resourceArgs.length ? handler.resourceArgs : [1]
@@ -987,15 +1056,7 @@ function applySupplementalCalls(calls, entities, context) {
         const result = collectStringsFromExpression(expr, resolver, 'paths', definitionContainer)
         mergeSourceSets(resolvedSources, result.resolvedFrom)
         if (result.dynamic) dynamicDetected = true
-        if (!result.values.length) {
-          if (result.dynamic) {
-            dynamicDetected = true
-          } else {
-            const message = `No se pudo resolver el valor de ${resourceKind} en ${call.name} (línea ${call.line ?? '?'})`
-            warn(message)
-          }
-          continue
-        }
+        if (!result.values.length) continue
         for (const value of result.values) {
           addResourceToEntity(entity, resourceKind, value)
           addResourceValue(addedResources, value)
@@ -1006,14 +1067,14 @@ function applySupplementalCalls(calls, entities, context) {
       record.resolvedValues[resourceKind] = addedResources.values.slice()
       record.resolved = anyResolved
       record.dynamic = dynamicDetected
-      if (!anyResolved) {
-        resolvedSources.add('fallback')
-      }
       record.resolvedFrom = finalizeResolvedTags(resolvedSources)
 
       if (addedResources.values.length) {
         const displayName = formatEntityDisplayName(entity)
-        const label = resourceKind === 'sounds' ? 'sonido' : (resourceKind === 'sprites' ? 'sprite' : 'modelo')
+        let label = 'modelo'
+        if (resourceKind === 'sounds') label = 'sonido'
+        else if (resourceKind === 'sprites') label = 'sprite'
+        else if (resourceKind === 'claws') label = 'garra'
         logSupplementalInfo(`Asociado ${label} adicional a ${entity.type} '${displayName}'`)
       }
     }
@@ -1027,6 +1088,7 @@ function applySupplementalCalls(calls, entities, context) {
 function normalizeSupplementalKind(handler) {
   if (!handler) return 'unknown'
   if (handler.kind === 'models') return 'model'
+  if (handler.kind === 'claws') return 'claw'
   if (handler.kind === 'sounds') return 'sound'
   if (handler.kind === 'sprites') return 'sprite'
   if (handler.kind === 'stat') return handler.field || 'stat'
@@ -1920,7 +1982,7 @@ function detectMenuArrayEntities(filePath, rawText, context, versionInfo, fileBa
         _pathSets: createPathSets(type, { models: [], claws: [], sounds: [], sprites: [] })
       }
 
-      applyMenuStatValue(entity, group, index, type)
+      applyMenuStatValue(entity, group, index)
       applyMenuResources(entity, group, index)
 
       entities.push(entity)
@@ -1962,9 +2024,9 @@ function extractMenuString(values, index) {
   return candidate ? candidate.trim() : null
 }
 
-function applyMenuStatValue(entity, group, index, type) {
+function applyMenuStatValue(entity, group, index) {
   if (!entity || !group) return
-  const statFields = TYPE_STAT_FIELDS[type] || []
+  const statFields = TYPE_STAT_FIELDS[entity.type] || []
   const mapping = {
     health: ['health', 'hp'],
     speed: ['speed'],
@@ -2011,7 +2073,7 @@ function applyMenuResources(entity, group, index) {
   }
 
   pushResources(modelValues, 'models')
-  pushResources(clawValues, 'models')
+  pushResources(clawValues, 'claws')
   pushResources(soundValues, 'sounds')
   pushResources(spriteValues, 'sprites')
 }
@@ -2242,7 +2304,7 @@ function resolveEntityName(call, context, fallback) {
   for (const arg of call.args) {
     const ident = extractIdentifier(arg)
     if (ident && HARDCODED_CONSTANTS[ident] !== undefined) {
-      return { value: HARDCODED_CONSTANTS[ident], token: ident }
+      return { value: HARDCODED_CONSTANTS[ident], token: ident, resolved: true }
     }
   }
   for (const arg of call.args) {
@@ -2251,14 +2313,14 @@ function resolveEntityName(call, context, fallback) {
       const resolved = resolver ? resolver.resolveValue(trimmed, 'name') : undefined
       const strings = flattenStringValues(resolved)
       const str = strings.find(Boolean)
-      if (typeof str === 'string' && str.length) return { value: str, token: trimmed }
+      if (typeof str === 'string' && str.length) return { value: str, token: trimmed, resolved: true }
     }
     const value = resolver ? resolver.resolveValue(arg, 'name') : undefined
     const strings = flattenStringValues(value)
     const str = strings.find(Boolean)
-    if (typeof str === 'string' && str.length) return { value: str, token: undefined }
+    if (typeof str === 'string' && str.length) return { value: str, token: undefined, resolved: true }
   }
-  return { value: fallback, token: undefined }
+  return { value: fallback, token: undefined, resolved: false }
 }
 
 function collectPathsFromArgs(call, type, context) {
@@ -2413,18 +2475,37 @@ function addResourceToEntity(entity, kind, value) {
   addResourceValue(entity._pathSets[kind], value)
 }
 
+function normalizeResPath(p) {
+  const normalized = normalizePath(p)
+  return normalized ? normalized.trim().toLowerCase() : ''
+}
+
+function dedupeList(arr) {
+  const seen = new Set()
+  const out = []
+  for (const value of arr || []) {
+    const normalized = normalizeResPath(value)
+    if (!normalized || seen.has(normalized)) continue
+    seen.add(normalized)
+    out.push(normalized)
+  }
+  return out
+}
+
 function finalizeEntityPaths(entity) {
   const sets = entity._pathSets || createPathSets(entity.type, entity.paths)
   const paths = { models: [], claws: [], sounds: [], sprites: [] }
-  if (isResourceAllowedForType(entity.type, 'models')) paths.models = sets.models.values.slice()
-  if (isResourceAllowedForType(entity.type, 'claws')) paths.claws = sets.claws.values.slice()
-  if (isResourceAllowedForType(entity.type, 'sounds')) paths.sounds = sets.sounds.values.slice()
-  if (isResourceAllowedForType(entity.type, 'sprites')) paths.sprites = sets.sprites.values.slice()
+  if (isResourceAllowedForType(entity.type, 'models')) paths.models = dedupeList(sets.models.values)
+  if (isResourceAllowedForType(entity.type, 'claws')) paths.claws = dedupeList(sets.claws.values)
+  if (isResourceAllowedForType(entity.type, 'sounds')) paths.sounds = dedupeList(sets.sounds.values)
+  if (isResourceAllowedForType(entity.type, 'sprites')) paths.sprites = dedupeList(sets.sprites.values)
   entity.paths = paths
   delete entity._pathSets
 }
 
-function extractStatsForEntity(call, type, context, prefixes) {
+function extractStatsForEntity(call, mapping, context, prefixes) {
+  const type = mapping && mapping.type
+  const normalizedFunction = mapping && mapping.normalized
   const stats = {}
   const resolvedMeta = {}
   const fields = TYPE_STAT_FIELDS[type] || []
@@ -2433,6 +2514,53 @@ function extractStatsForEntity(call, type, context, prefixes) {
   const resolver = context.resolver
   const warn = context.warn
   const definitionContainer = context.definitions
+
+  if (normalizedFunction === 'zp_items_register' && type === 'shop_item') {
+    const specialStats = { cost: 0, team: 0, unlimited: 0 }
+    const specialMeta = {}
+    let overrideName
+
+    const nameExpr = call.args[0]
+    if (!overrideName && resolver) {
+      const resolvedName = resolver.resolveValue(nameExpr, 'shop_item.name')
+      const strings = flattenStringValues(resolvedName)
+      const candidate = strings.find(str => typeof str === 'string' && str.trim().length)
+      if (typeof candidate === 'string') overrideName = candidate.trim()
+    }
+    if (!overrideName && typeof nameExpr === 'string') {
+      const trimmed = nameExpr.trim()
+      if (isQuotedStringLiteral(trimmed)) {
+        const literal = parseStringLiteral(trimmed)
+        if (literal) overrideName = literal.trim()
+      }
+    }
+
+    const costExpr = call.args[1]
+    let costValue
+    if (resolver) costValue = resolver.resolveValue(costExpr, 'shop_item.cost')
+    let numericCost = toNumber(costValue)
+    if (numericCost === undefined) {
+      const literalCost = resolveLiteralValue(costExpr, resolver, 'shop_item.cost')
+      if (literalCost !== undefined) numericCost = toNumber(literalCost)
+    }
+    if (numericCost !== undefined) {
+      specialStats.cost = numericCost
+    } else {
+      const set = new Set()
+      set.add('fallback')
+      specialMeta.cost = set
+    }
+
+    const teamSet = new Set()
+    teamSet.add('fallback')
+    specialMeta.team = teamSet
+
+    const unlimitedSet = new Set()
+    unlimitedSet.add('fallback')
+    specialMeta.unlimited = unlimitedSet
+
+    return { stats: specialStats, resolvedFrom: specialMeta, overrides: { name: overrideName } }
+  }
 
   for (const field of fields) {
     const keywords = STAT_KEYWORDS[field] || [field]
@@ -2492,7 +2620,14 @@ function extractStatsForEntity(call, type, context, prefixes) {
     if (hasResolution) {
       finalValue = resolvedValue
     } else {
-      if (attempted && !dynamicDetected && warn) {
+      const shouldWarn = (
+        type === 'shop_item' &&
+        field === 'unlimited' &&
+        normalizedFunction === 'zp_register_extra_item' &&
+        !dynamicDetected &&
+        warn
+      )
+      if (shouldWarn) {
         warn(`No se pudo resolver el valor de ${field} en ${call.name} (línea ${call.line})`)
       }
       finalValue = 0
@@ -2509,7 +2644,7 @@ function extractStatsForEntity(call, type, context, prefixes) {
     }
   }
 
-  return { stats, resolvedFrom: resolvedMeta }
+  return { stats, resolvedFrom: resolvedMeta, overrides: {} }
 }
 
 function findValueInDefinitions(entries, keywords, prefixes, context) {

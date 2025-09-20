@@ -1,0 +1,84 @@
+{
+  "columns": [
+    {
+      "name": "file",
+      "type": "string"
+    },
+    {
+      "name": "entity_type",
+      "type": "string"
+    },
+    {
+      "name": "entity_name",
+      "type": "string"
+    },
+    {
+      "name": "register_calls",
+      "type": "list"
+    },
+    {
+      "name": "items",
+      "type": "list"
+    },
+    {
+      "name": "abilities",
+      "type": "list"
+    },
+    {
+      "name": "human_pseudo_classes",
+      "type": "list"
+    },
+    {
+      "name": "line_count",
+      "type": "int"
+    },
+    {
+      "name": "ability_count",
+      "type": "int"
+    },
+    {
+      "name": "resource_count",
+      "type": "int"
+    },
+    {
+      "name": "register_count",
+      "type": "int"
+    },
+    {
+      "name": "stat_health",
+      "type": "float"
+    },
+    {
+      "name": "stat_speed",
+      "type": "float"
+    },
+    {
+      "name": "stat_gravity",
+      "type": "float"
+    },
+    {
+      "name": "stat_armor",
+      "type": "float"
+    },
+    {
+      "name": "stat_knockback",
+      "type": "float"
+    },
+    {
+      "name": "paths_models",
+      "type": "list"
+    },
+    {
+      "name": "paths_claws",
+      "type": "list"
+    },
+    {
+      "name": "paths_sounds",
+      "type": "list"
+    },
+    {
+      "name": "paths_sprites",
+      "type": "list"
+    }
+  ]
+}

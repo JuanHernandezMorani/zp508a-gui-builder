@@ -15,7 +15,8 @@
   },
   "dependencies": {
     "electron-store": "^8.1.0",
-    "fs-extra": "^11.2.0"
+    "fs-extra": "^11.2.0",
+    "three": "^0.180.0"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

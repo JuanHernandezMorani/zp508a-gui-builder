@@ -17,7 +17,8 @@ export interface BaseItem {
   description?: string
   source: 'ui' | 'scan'
   meta: Record<string, any>
-  paths: { models: string[]; sounds: string[]; sprites: string[] }
+  paths: { models: string[]; claws: string[]; sounds: string[]; sprites: string[] }
+  abilities?: string[]
 }
 
 export interface ZombieStats {

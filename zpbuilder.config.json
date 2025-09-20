@@ -1,7 +1,7 @@
 {
   "csRoot": "",
-  "amxxpcPath": "",
+  "amxxpcPath": "C:\\Users\\braia\\OneDrive\\Desktop\\ZPBuilder\\input\\NewZombie\\cstrike\\addons\\amxmodx\\scripting\\amxxpc.exe",
   "includeDirs": [
-    "C:\\Users\\braia\\OneDrive\\Desktop\\zp-builder-ui-aligned\\input\\NewZombie\\cstrike\\addons\\amxmodx\\scripting\\include"
+    "C:\\Users\\braia\\OneDrive\\Desktop\\ZPBuilder\\input\\NewZombie\\cstrike\\addons\\amxmodx\\scripting\\include"
   ]
 }

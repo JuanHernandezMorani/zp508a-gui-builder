@@ -11,7 +11,8 @@
     "build": "vite build && electron-builder",
     "start": "electron .",
     "typecheck": "tsc --noEmit",
-    "smoke": "node scripts/smoke-parse.js"
+    "smoke": "node scripts/smoke-parse.js",
+    "nuke:cache": "rm -rf ./node_modules/.cache"
   },
   "dependencies": {
     "electron-store": "^8.1.0",

@@ -2,7 +2,10 @@ const ZP508a_DEFAULTS = Object.freeze({
   zombie_class: { health: 2000, speed: 250, gravity: 1.0, knockback: 1.0 },
   human_class: { health: 100, speed: 240, gravity: 1.0, armor: 0 },
   special_zombie_class: { health: 2000, speed: 250, gravity: 1.0, knockback: 1.0 },
-  special_human_class: { health: 100, speed: 240, gravity: 1.0, armor: 0 }
+  special_human_class: { health: 100, speed: 240, gravity: 1.0, armor: 0 },
+  shop_item: { cost: 0, team: 0, unlimited: 0 },
+  mode: {},
+  weapon: {}
 })
 
 function createDefaultTracker() {
@@ -28,6 +31,18 @@ function ensureDefaultTracker(entity) {
   return fresh
 }
 
+function hasFallback(meta, field) {
+  if (!meta || !field) return false
+  const source = meta.resolvedFrom && meta.resolvedFrom[field]
+  if (!source) return false
+  if (source instanceof Set) return source.has('fallback')
+  if (Array.isArray(source)) return source.includes('fallback')
+  if (typeof source === 'object' && Array.isArray(source.resolvedFrom)) {
+    return source.resolvedFrom.includes('fallback')
+  }
+  return false
+}
+
 function applyDefaultsToEntity(entity) {
   if (!entity || typeof entity !== 'object') return []
   if (!entity.stats || typeof entity.stats !== 'object') entity.stats = {}
@@ -37,7 +52,12 @@ function applyDefaultsToEntity(entity) {
   const applied = []
   for (const [field, value] of Object.entries(defaults)) {
     const current = entity.stats[field]
-    if (current === undefined || current === null || Number.isNaN(current)) {
+    const treatAsMissing =
+      current === undefined ||
+      current === null ||
+      Number.isNaN(current) ||
+      (hasFallback(entity.meta, field) && (current === 0 || current === ''))
+    if (treatAsMissing) {
       entity.stats[field] = value
       tracker.applied.add(field)
       tracker.overridden.delete(field)
